@@ -341,6 +341,11 @@ class TargetSpecificAttr<TargetArch target> {
 /// redeclarations, even when it's written on a parameter.
 class InheritableParamAttr : InheritableAttr;
 
+/// An attribute which changes the ABI rules for a specific parameter.
+class ParameterABIAttr : InheritableParamAttr {
+  let Subjects = SubjectList<[ParmVar]>;
+}
+
 /// An ignored attribute, which we parse but discard with no checking.
 class IgnoredAttr : Attr {
   let Ignored = 1;
@@ -1233,6 +1238,12 @@ def ObjCRuntimeName : Attr {
   let Documentation = [ObjCRuntimeNameDocs];
 }
 
+def ObjCRuntimeVisible : Attr {
+  let Spellings = [GNU<"objc_runtime_visible">];
+  let Subjects = SubjectList<[ObjCInterface], ErrorDiag>;
+  let Documentation = [ObjCRuntimeVisibleDocs];
+}
+
 def ObjCBoxable : Attr {
   let Spellings = [GNU<"objc_boxable">];
   let Subjects = SubjectList<[Record], ErrorDiag, "ExpectedStructOrUnion">;
@@ -1396,6 +1407,27 @@ def StdCall : InheritableAttr {
   let Documentation = [StdCallDocs];
 }
 
+def SwiftCall : InheritableAttr {
+  let Spellings = [GCC<"swiftcall">];
+//  let Subjects = SubjectList<[Function]>;
+  let Documentation = [SwiftCallDocs];
+}
+
+def SwiftContext : ParameterABIAttr {
+  let Spellings = [GCC<"swift_context">];
+  let Documentation = [SwiftContextDocs];
+}
+
+def SwiftErrorResult : ParameterABIAttr {
+  let Spellings = [GCC<"swift_error_result">];
+  let Documentation = [SwiftErrorResultDocs];
+}
+
+def SwiftIndirectResult : ParameterABIAttr {
+  let Spellings = [GCC<"swift_indirect_result">];
+  let Documentation = [SwiftIndirectResultDocs];
+}
+
 def SysVABI : InheritableAttr {
   let Spellings = [GCC<"sysv_abi">];
 //  let Subjects = [Function, ObjCMethod];
@@ -1420,6 +1452,16 @@ def Pascal : InheritableAttr {
   let Spellings = [GNU<"pascal">, Keyword<"__pascal">, Keyword<"_pascal">];
 //  let Subjects = [Function, ObjCMethod];
   let Documentation = [Undocumented];
+}
+
+def PreserveMost : InheritableAttr {
+  let Spellings = [GNU<"preserve_most">];
+  let Documentation = [PreserveMostDocs];
+}
+
+def PreserveAll : InheritableAttr {
+  let Spellings = [GNU<"preserve_all">];
+  let Documentation = [PreserveAllDocs];
 }
 
 def Target : InheritableAttr {

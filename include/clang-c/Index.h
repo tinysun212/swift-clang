@@ -2943,6 +2943,9 @@ enum CXCallingConv {
   CXCallingConv_X86_64Win64 = 10,
   CXCallingConv_X86_64SysV = 11,
   CXCallingConv_X86VectorCall = 12,
+  CXCallingConv_Swift = 13,
+  CXCallingConv_PreserveMost = 14,
+  CXCallingConv_PreserveAll = 15,
 
   CXCallingConv_Invalid = 100,
   CXCallingConv_Unexposed = 200
@@ -3640,8 +3643,8 @@ typedef enum CXChildVisitResult
  * Visits the children of a cursor using the specified block.  Behaves
  * identically to clang_visitChildren() in all other respects.
  */
-unsigned clang_visitChildrenWithBlock(CXCursor parent,
-                                      CXCursorVisitorBlock block);
+CINDEX_LINKAGE unsigned clang_visitChildrenWithBlock(CXCursor parent,
+                                                    CXCursorVisitorBlock block);
 #  endif
 #endif
 

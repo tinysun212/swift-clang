@@ -128,6 +128,20 @@ static void ProcessAPINotes(Sema &S, Decl *D,
   }
 }
 
+static void ProcessAPINotes(Sema &S, Decl *D,
+                            const api_notes::CommonTypeInfo &Info) {
+  // swift_bridge
+  if (!Info.getSwiftBridge().empty() &&
+      !D->getAttr<SwiftBridgeAttr>()) {
+    D->addAttr(
+      SwiftBridgeAttr::CreateImplicit(S.Context,
+                                      CopyString(S.Context,
+                                                 Info.getSwiftBridge())));
+  }
+
+  ProcessAPINotes(S, D, static_cast<const api_notes::CommonEntityInfo &>(Info));
+}
+
 /// Process API notes for a variable or property.
 static void ProcessAPINotes(Sema &S, Decl *D,
                             const api_notes::VariableInfo &Info) {
@@ -208,6 +222,15 @@ static void ProcessAPINotes(Sema &S, FunctionDecl *D,
                   static_cast<const api_notes::FunctionInfo &>(Info));
 }
 
+/// Process API notes for an enumerator.
+static void ProcessAPINotes(Sema &S, EnumConstantDecl *D,
+                            const api_notes::EnumConstantInfo &Info) {
+
+  // Handle common information.
+  ProcessAPINotes(S, D,
+                  static_cast<const api_notes::CommonEntityInfo &>(Info));
+}
+
 /// Process API notes for an Objective-C method.
 static void ProcessAPINotes(Sema &S, ObjCMethodDecl *D,
                             const api_notes::ObjCMethodInfo &Info) {
@@ -230,26 +253,31 @@ static void ProcessAPINotes(Sema &S, ObjCMethodDecl *D,
                   static_cast<const api_notes::FunctionInfo &>(Info));
 }
 
+/// Process API notes for a tag.
+static void ProcessAPINotes(Sema &S, TagDecl *D,
+                            const api_notes::TagInfo &Info) {
+  // Handle common type information.
+  ProcessAPINotes(S, D, static_cast<const api_notes::CommonTypeInfo &>(Info));
+}
+
+/// Process API notes for a typedef.
+static void ProcessAPINotes(Sema &S, TypedefNameDecl *D,
+                            const api_notes::TypedefInfo &Info) {
+  // Handle common type information.
+  ProcessAPINotes(S, D, static_cast<const api_notes::CommonTypeInfo &>(Info));
+}
+
 /// Process API notes for an Objective-C class or protocol.
 static void ProcessAPINotes(Sema &S, ObjCContainerDecl *D,
                             const api_notes::ObjCContextInfo &Info) {
 
-  // Handle common entity information.
-  ProcessAPINotes(S, D, static_cast<const api_notes::CommonEntityInfo &>(Info));
+  // Handle common type information.
+  ProcessAPINotes(S, D, static_cast<const api_notes::CommonTypeInfo &>(Info));
 }
 
 /// Process API notes for an Objective-C class.
 static void ProcessAPINotes(Sema &S, ObjCInterfaceDecl *D,
                             const api_notes::ObjCContextInfo &Info) {
-  // swift_bridge
-  if (!Info.getSwiftBridge().empty() &&
-      !D->getAttr<SwiftBridgeAttr>()) {
-    D->addAttr(
-      SwiftBridgeAttr::CreateImplicit(S.Context,
-                                      CopyString(S.Context,
-                                                 Info.getSwiftBridge())));
-  }
-
   // Handle information common to Objective-C classes and protocols.
   ProcessAPINotes(S, static_cast<clang::ObjCContainerDecl *>(D), Info);
 }
@@ -312,7 +340,45 @@ void Sema::ProcessAPINotes(Decl *D) {
       return;
     }
 
+    // Tags
+    if (auto Tag = dyn_cast<TagDecl>(D)) {
+      if (api_notes::APINotesReader *Reader
+            = APINotes.findAPINotes(D->getLocation())) {
+        if (auto Info = Reader->lookupTag(Tag->getName())) {
+          ::ProcessAPINotes(*this, Tag, *Info);
+        }
+      }
+
+      return;
+    }
+
+    // Typedefs
+    if (auto Typedef = dyn_cast<TypedefNameDecl>(D)) {
+      if (api_notes::APINotesReader *Reader
+            = APINotes.findAPINotes(D->getLocation())) {
+        if (auto Info = Reader->lookupTypedef(Typedef->getName())) {
+          ::ProcessAPINotes(*this, Typedef, *Info);
+        }
+      }
+
+      return;
+    }
+
     return;
+  }
+
+  // Enumerators.
+  if (D->getDeclContext()->getRedeclContext()->isFileContext()) {
+    if (auto EnumConstant = dyn_cast<EnumConstantDecl>(D)) {
+      if (api_notes::APINotesReader *Reader
+            = APINotes.findAPINotes(D->getLocation())) {
+        if (auto Info = Reader->lookupEnumConstant(EnumConstant->getName())) {
+          ::ProcessAPINotes(*this, EnumConstant, *Info);
+        }
+      }
+
+      return;
+    }
   }
 
   if (auto ObjCContainer = dyn_cast<ObjCContainerDecl>(D->getDeclContext())) {

@@ -43,6 +43,8 @@ public:
   /// The name of the module
   std::string ModuleName;
 
+  bool SwiftInferImportAsMember = false;
+
   /// Information about Objective-C contexts (classes or protocols).
   ///
   /// Indexed by the identifier ID and a bit indication whether we're looking
@@ -76,6 +78,21 @@ public:
   ///
   /// Indexed by the identifier ID.
   llvm::DenseMap<unsigned, GlobalFunctionInfo> GlobalFunctions;
+
+  /// Information about enumerators.
+  ///
+  /// Indexed by the identifier ID.
+  llvm::DenseMap<unsigned, EnumConstantInfo> EnumConstants;
+
+  /// Information about tags.
+  ///
+  /// Indexed by the identifier ID.
+  llvm::DenseMap<unsigned, TagInfo> Tags;
+
+  /// Information about typedefs.
+  ///
+  /// Indexed by the identifier ID.
+  llvm::DenseMap<unsigned, TypedefInfo> Typedefs;
 
   /// Retrieve the ID for the given identifier.
   IdentifierID getIdentifier(StringRef identifier) {
@@ -123,6 +140,9 @@ private:
   void writeObjCSelectorBlock(llvm::BitstreamWriter &writer);
   void writeGlobalVariableBlock(llvm::BitstreamWriter &writer);
   void writeGlobalFunctionBlock(llvm::BitstreamWriter &writer);
+  void writeEnumConstantBlock(llvm::BitstreamWriter &writer);
+  void writeTagBlock(llvm::BitstreamWriter &writer);
+  void writeTypedefBlock(llvm::BitstreamWriter &writer);
 };
 
 /// Record the name of a block.
@@ -196,6 +216,11 @@ void APINotesWriter::Implementation::writeControlBlock(
 
   control_block::ModuleNameLayout moduleName(writer);
   moduleName.emit(ScratchRecord, ModuleName);
+
+  if (SwiftInferImportAsMember) {
+    control_block::ModuleOptionsLayout moduleOptions(writer);
+    moduleOptions.emit(ScratchRecord, SwiftInferImportAsMember);
+  }
 }
 
 namespace {
@@ -279,6 +304,20 @@ namespace {
     out.write(info.SwiftName.c_str(), info.SwiftName.size());
   }
 
+  // Retrieve the serialized size of the given CommonTypeInfo, for use
+  // in on-disk hash tables.
+  static unsigned getCommonTypeInfoSize(const CommonTypeInfo &info) {
+    return 2 + info.getSwiftBridge().size() + getCommonEntityInfoSize(info);
+  }
+
+  /// Emit a serialized representation of the common type information.
+  static void emitCommonTypeInfo(raw_ostream &out, const CommonTypeInfo &info) {
+    emitCommonEntityInfo(out, info);
+    endian::Writer<little> writer(out);
+    writer.write<uint16_t>(info.getSwiftBridge().size());
+    out.write(info.getSwiftBridge().c_str(), info.getSwiftBridge().size());
+  }
+
   /// Used to serialize the on-disk Objective-C context table.
   class ObjCContextTableInfo {
   public:
@@ -301,9 +340,8 @@ namespace {
                                                     data_type_ref data) {
       uint32_t keyLength = sizeof(IdentifierID) + 1;
       uint32_t dataLength = sizeof(ContextID)
-                          + getCommonEntityInfoSize(data.second)
-                          + dataBytes
-                          + 2 + data.second.getSwiftBridge().size();
+                          + getCommonTypeInfoSize(data.second)
+                          + dataBytes;
       endian::Writer<little> writer(out);
       writer.write<uint16_t>(keyLength);
       writer.write<uint16_t>(dataLength);
@@ -321,7 +359,7 @@ namespace {
       endian::Writer<little> writer(out);
       writer.write<StoredContextID >(data.first);
 
-      emitCommonEntityInfo(out, data.second);
+      emitCommonTypeInfo(out, data.second);
 
       // FIXME: Inefficient representation.
       uint8_t bytes[dataBytes] = { 0, 0, 0 };
@@ -334,10 +372,6 @@ namespace {
       bytes[2] = data.second.hasDesignatedInits();
 
       out.write(reinterpret_cast<const char *>(bytes), dataBytes);
-
-      writer.write<uint16_t>(data.second.getSwiftBridge().size());
-      out.write(data.second.getSwiftBridge().data(),
-                data.second.getSwiftBridge().size());
     }
   };
 } // end anonymous namespace
@@ -733,6 +767,192 @@ void APINotesWriter::Implementation::writeGlobalFunctionBlock(
   layout.emit(ScratchRecord, tableOffset, hashTableBlob);
 }
 
+namespace {
+  /// Used to serialize the on-disk global enum constant.
+  class EnumConstantTableInfo {
+  public:
+    using key_type = unsigned; // name ID
+    using key_type_ref = key_type;
+    using data_type = EnumConstantInfo;
+    using data_type_ref = const data_type &;
+    using hash_value_type = size_t;
+    using offset_type = unsigned;
+
+    hash_value_type ComputeHash(key_type_ref key) {
+      return static_cast<size_t>(llvm::hash_value(key));
+    }
+
+    std::pair<unsigned, unsigned> EmitKeyDataLength(raw_ostream &out,
+                                                    key_type_ref key,
+                                                    data_type_ref data) {
+      uint32_t keyLength = sizeof(uint32_t);
+      uint32_t dataLength = getCommonEntityInfoSize(data);
+      endian::Writer<little> writer(out);
+      writer.write<uint16_t>(keyLength);
+      writer.write<uint16_t>(dataLength);
+      return { keyLength, dataLength };
+    }
+
+    void EmitKey(raw_ostream &out, key_type_ref key, unsigned len) {
+      endian::Writer<little> writer(out);
+      writer.write<uint32_t>(key);
+    }
+
+    void EmitData(raw_ostream &out, key_type_ref key, data_type_ref data,
+                  unsigned len) {
+      emitCommonEntityInfo(out, data);
+    }
+  };
+} // end anonymous namespace
+
+void APINotesWriter::Implementation::writeEnumConstantBlock(
+       llvm::BitstreamWriter &writer) {
+  BCBlockRAII restoreBlock(writer, ENUM_CONSTANT_BLOCK_ID, 3);
+
+  if (EnumConstants.empty())
+    return;  
+
+  llvm::SmallString<4096> hashTableBlob;
+  uint32_t tableOffset;
+  {
+    llvm::OnDiskChainedHashTableGenerator<EnumConstantTableInfo> generator;
+    for (auto &entry : EnumConstants)
+      generator.insert(entry.first, entry.second);
+
+    llvm::raw_svector_ostream blobStream(hashTableBlob);
+    // Make sure that no bucket is at offset 0
+    endian::Writer<little>(blobStream).write<uint32_t>(0);
+    tableOffset = generator.Emit(blobStream);
+  }
+
+  enum_constant_block::EnumConstantDataLayout layout(writer);
+  layout.emit(ScratchRecord, tableOffset, hashTableBlob);
+}
+
+namespace {
+  /// Used to serialize the on-disk tag table.
+  class TagTableInfo {
+  public:
+    using key_type = unsigned; // name ID
+    using key_type_ref = key_type;
+    using data_type = TagInfo;
+    using data_type_ref = const data_type &;
+    using hash_value_type = size_t;
+    using offset_type = unsigned;
+
+    hash_value_type ComputeHash(key_type_ref key) {
+      return static_cast<size_t>(llvm::hash_value(key));
+    }
+
+    std::pair<unsigned, unsigned> EmitKeyDataLength(raw_ostream &out,
+                                                    key_type_ref key,
+                                                    data_type_ref data) {
+      uint32_t keyLength = sizeof(IdentifierID);
+      uint32_t dataLength = getCommonTypeInfoSize(data);
+      endian::Writer<little> writer(out);
+      writer.write<uint16_t>(keyLength);
+      writer.write<uint16_t>(dataLength);
+      return { keyLength, dataLength };
+    }
+
+    void EmitKey(raw_ostream &out, key_type_ref key, unsigned len) {
+      endian::Writer<little> writer(out);
+      writer.write<IdentifierID>(key);
+    }
+
+    void EmitData(raw_ostream &out, key_type_ref key, data_type_ref data,
+                  unsigned len) {
+      emitCommonTypeInfo(out, data);
+    }
+  };
+} // end anonymous namespace
+
+void APINotesWriter::Implementation::writeTagBlock(
+       llvm::BitstreamWriter &writer) {
+  BCBlockRAII restoreBlock(writer, TAG_BLOCK_ID, 3);
+
+  if (Tags.empty())
+    return;  
+
+  llvm::SmallString<4096> hashTableBlob;
+  uint32_t tableOffset;
+  {
+    llvm::OnDiskChainedHashTableGenerator<TagTableInfo> generator;
+    for (auto &entry : Tags)
+      generator.insert(entry.first, entry.second);
+
+    llvm::raw_svector_ostream blobStream(hashTableBlob);
+    // Make sure that no bucket is at offset 0
+    endian::Writer<little>(blobStream).write<uint32_t>(0);
+    tableOffset = generator.Emit(blobStream);
+  }
+
+  tag_block::TagDataLayout layout(writer);
+  layout.emit(ScratchRecord, tableOffset, hashTableBlob);
+}
+
+namespace {
+  /// Used to serialize the on-disk typedef table.
+  class TypedefTableInfo {
+  public:
+    using key_type = unsigned; // name ID
+    using key_type_ref = key_type;
+    using data_type = TypedefInfo;
+    using data_type_ref = const data_type &;
+    using hash_value_type = size_t;
+    using offset_type = unsigned;
+
+    hash_value_type ComputeHash(key_type_ref key) {
+      return static_cast<size_t>(llvm::hash_value(key));
+    }
+
+    std::pair<unsigned, unsigned> EmitKeyDataLength(raw_ostream &out,
+                                                    key_type_ref key,
+                                                    data_type_ref data) {
+      uint32_t keyLength = sizeof(IdentifierID);
+      uint32_t dataLength = getCommonTypeInfoSize(data);
+      endian::Writer<little> writer(out);
+      writer.write<uint16_t>(keyLength);
+      writer.write<uint16_t>(dataLength);
+      return { keyLength, dataLength };
+    }
+
+    void EmitKey(raw_ostream &out, key_type_ref key, unsigned len) {
+      endian::Writer<little> writer(out);
+      writer.write<IdentifierID>(key);
+    }
+
+    void EmitData(raw_ostream &out, key_type_ref key, data_type_ref data,
+                  unsigned len) {
+      emitCommonTypeInfo(out, data);
+    }
+  };
+} // end anonymous namespace
+
+void APINotesWriter::Implementation::writeTypedefBlock(
+       llvm::BitstreamWriter &writer) {
+  BCBlockRAII restoreBlock(writer, TYPEDEF_BLOCK_ID, 3);
+
+  if (Typedefs.empty())
+    return;  
+
+  llvm::SmallString<4096> hashTableBlob;
+  uint32_t tableOffset;
+  {
+    llvm::OnDiskChainedHashTableGenerator<TypedefTableInfo> generator;
+    for (auto &entry : Typedefs)
+      generator.insert(entry.first, entry.second);
+
+    llvm::raw_svector_ostream blobStream(hashTableBlob);
+    // Make sure that no bucket is at offset 0
+    endian::Writer<little>(blobStream).write<uint32_t>(0);
+    tableOffset = generator.Emit(blobStream);
+  }
+
+  typedef_block::TypedefDataLayout layout(writer);
+  layout.emit(ScratchRecord, tableOffset, hashTableBlob);
+}
+
 void APINotesWriter::Implementation::writeToStream(llvm::raw_ostream &os) {
   // Write the API notes file into a buffer.
   SmallVector<char, 0> buffer;
@@ -753,6 +973,9 @@ void APINotesWriter::Implementation::writeToStream(llvm::raw_ostream &os) {
     writeObjCSelectorBlock(writer);
     writeGlobalVariableBlock(writer);
     writeGlobalFunctionBlock(writer);
+    writeEnumConstantBlock(writer);
+    writeTagBlock(writer);
+    writeTypedefBlock(writer);
   }
 
   // Write the buffer to the stream.
@@ -856,3 +1079,27 @@ void APINotesWriter::addGlobalFunction(llvm::StringRef name,
   assert(!Impl.GlobalFunctions.count(nameID));
   Impl.GlobalFunctions[nameID] = info;
 }
+
+void APINotesWriter::addEnumConstant(llvm::StringRef name,
+                                     const EnumConstantInfo &info) {
+  IdentifierID enumConstantID = Impl.getIdentifier(name);
+  assert(!Impl.EnumConstants.count(enumConstantID));
+  Impl.EnumConstants[enumConstantID] = info;
+}
+
+void APINotesWriter::addTag(llvm::StringRef name, const TagInfo &info) {
+  IdentifierID tagID = Impl.getIdentifier(name);
+  assert(!Impl.Tags.count(tagID));
+  Impl.Tags[tagID] = info;
+}
+
+void APINotesWriter::addTypedef(llvm::StringRef name, const TypedefInfo &info) {
+  IdentifierID typedefID = Impl.getIdentifier(name);
+  assert(!Impl.Typedefs.count(typedefID));
+  Impl.Typedefs[typedefID] = info;
+}
+
+void APINotesWriter::addModuleOptions(ModuleOptions opts) {
+  Impl.SwiftInferImportAsMember = opts.SwiftInferImportAsMember;
+}
+

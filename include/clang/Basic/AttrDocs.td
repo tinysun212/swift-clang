@@ -589,6 +589,13 @@ can only be placed before an @protocol or @interface declaration:
     }];
 }
 
+def ObjCRuntimeVisibleDocs : Documentation {
+    let Category = DocCatFunction;
+    let Content = [{
+This attribute specifies that the Objective-C class to which it applies is visible to the Objective-C runtime but not to the linker. Classes annotated with this attribute cannot be subclassed and cannot have categories defined for them.
+    }];
+}
+
 def ObjCBoxableDocs : Documentation {
     let Category = DocCatFunction;
     let Content = [{
@@ -1952,5 +1959,215 @@ hardware design, touch the red zone.
   The exception handler should only be used for exceptions which push an
   error code and all other exceptions must use the interrupt handler.
   The system will crash if the wrong handler is used.
+  }];
+}
+
+def PreserveMostDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On X86-64 and AArch64 targets, this attribute changes the calling convention of
+a function. The ``preserve_most`` calling convention attempts to make the code
+in the caller as unintrusive as possible. This convention behaves identically
+to the ``C`` calling convention on how arguments and return values are passed,
+but it uses a different set of caller/callee-saved registers. This alleviates
+the burden of saving and recovering a large register set before and after the
+call in the caller. If the arguments are passed in callee-saved registers,
+then they will be preserved by the callee across the call. This doesn't
+apply for values returned in callee-saved registers.
+
+- On X86-64 the callee preserves all general purpose registers, except for
+  R11. R11 can be used as a scratch register. Floating-point registers
+  (XMMs/YMMs) are not preserved and need to be saved by the caller.
+
+The idea behind this convention is to support calls to runtime functions
+that have a hot path and a cold path. The hot path is usually a small piece
+of code that doesn't use many registers. The cold path might need to call out to
+another function and therefore only needs to preserve the caller-saved
+registers, which haven't already been saved by the caller. The
+`preserve_most` calling convention is very similar to the ``cold`` calling
+convention in terms of caller/callee-saved registers, but they are used for
+different types of function calls. ``coldcc`` is for function calls that are
+rarely executed, whereas `preserve_most` function calls are intended to be
+on the hot path and definitely executed a lot. Furthermore ``preserve_most``
+doesn't prevent the inliner from inlining the function call.
+
+This calling convention will be used by a future version of the Objective-C
+runtime and should therefore still be considered experimental at this time.
+Although this convention was created to optimize certain runtime calls to
+the Objective-C runtime, it is not limited to this runtime and might be used
+by other runtimes in the future too. The current implementation only
+supports X86-64 and AArch64, but the intention is to support more architectures
+in the future.
+  }];
+}
+
+def PreserveAllDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On X86-64 and AArch64 targets, this attribute changes the calling convention of
+a function. The ``preserve_all`` calling convention attempts to make the code
+in the caller even less intrusive than the ``preserve_most`` calling convention.
+This calling convention also behaves identical to the ``C`` calling convention
+on how arguments and return values are passed, but it uses a different set of
+caller/callee-saved registers. This removes the burden of saving and
+recovering a large register set before and after the call in the caller. If
+the arguments are passed in callee-saved registers, then they will be
+preserved by the callee across the call. This doesn't apply for values
+returned in callee-saved registers.
+
+- On X86-64 the callee preserves all general purpose registers, except for
+  R11. R11 can be used as a scratch register. Furthermore it also preserves
+  all floating-point registers (XMMs/YMMs).
+
+The idea behind this convention is to support calls to runtime functions
+that don't need to call out to any other functions.
+
+This calling convention, like the ``preserve_most`` calling convention, will be
+used by a future version of the Objective-C runtime and should be considered
+experimental at this time.
+  }];
+}
+
+def SwiftCallDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``swiftcall`` attribute indicates that a function should be called
+using the Swift calling convention for a function or function pointer.
+
+The lowering for the Swift calling convention, as described by the Swift
+ABI documentation, occurs in multiple phases.  The first, "high-level"
+phase breaks down the formal parameters and results into innately direct
+and indirect components, adds implicit paraameters for the generic
+signature, and assigns the context and error ABI treatments to parameters
+where applicable.  The second phase breaks down the direct parameters
+and results from the first phase and assigns them to registers or the
+stack.  The ``swiftcall`` convention only handles this second phase of
+lowering; the C function type must accurately reflect the results
+of the first phase, as follows:
+
+- Results classified as indirect by high-level lowering should be
+  represented as parameters with the ``swift_indirect_result`` attribute.
+
+- Results classified as direct by high-level lowering should be represented
+  as follows:
+
+  - First, remove any empty direct results.
+
+  - If there are no direct results, the C result type should be ``void``.
+
+  - If there is one direct result, the C result type should be a type with
+    the exact layout of that result type.
+
+  - If there are a multiple direct results, the C result type should be
+    a struct type with the exact layout of a tuple of those results.
+
+- Parameters classified as indirect by high-level lowering should be
+  represented as parameters of pointer type.
+
+- Parameters classified as direct by high-level lowering should be
+  omitted if they are empty types; otherwise, they should be represented
+  as a parameter type with a layout exactly matching the layout of the
+  Swift parameter type.
+
+- The context parameter, if present, should be represented as a trailing
+  parameter with the ``swift_context`` attribute.
+
+- The error result parameter, if present, should be represented as a
+  trailing parameter (always following a context parameter) with the
+  ``swift_error_result`` attribute.
+
+``swiftcall`` does not support variadic arguments or unprototyped functions.
+
+The parameter ABI treatment attributes are aspects of the function type.
+A function type which which applies an ABI treatment attribute to a
+parameter is a different type from an otherwise-identical function type
+that does not.  A single parameter may not have multiple ABI treatment
+attributes.
+
+Support for this feature is target-dependent, although it should be
+supported on every target that Swift supports.  Query for this support
+with ``__has_attribute(swiftcall)``.  This implies support for the
+``swift_context``, ``swift_error_result``, and ``swift_indirect_result``
+attributes.
+  }];
+}
+
+def SwiftContextDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``swift_context`` attribute marks a parameter of a ``swiftcall``
+function as having the special context-parameter ABI treatment.
+
+This treatment generally passes the context value in a special register
+which is normally callee-preserved.
+
+A ``swift_context`` parameter must either be the last parameter or must be
+followed by a ``swift_error_result`` parameter (which itself must always be
+the last parameter).
+
+A context parameter must have pointer or reference type.
+  }];
+}
+
+def SwiftErrorResultDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``swift_error_result`` attribute marks a parameter of a ``swiftcall``
+function as having the special error-result ABI treatment.
+
+This treatment generally passes the underlying error value in and out of
+the function through a special register which is normally callee-preserved.
+This is modeled in C by pretending that the register is addressable memory:
+
+- The caller appears to pass the address of a variable of pointer type.
+  The current value of this variable is copied into the register before
+  the call; if the call returns normally, the value is copied back into the
+  variable.
+
+- The callee appears to receive the address of a variable.  This address
+  is actually a hidden location in its own stack, initialized with the
+  value of the register upon entry.  When the function returns normally,
+  the value in that hidden location is written back to the register.
+
+A ``swift_error_result`` parameter must be the last parameter, and it must be
+preceded by a ``swift_context`` parameter.
+
+A ``swift_error_result`` parameter must have type ``T**`` or ``T*&`` for some
+type T.  Note that no qualifiers are permitted on the intermediate level.
+
+It is undefined behavior if the caller does not pass a pointer or
+reference to a valid object.
+
+The standard convention is that the error value itself (that is, the
+value stored in the apparent argument) will be null upon function entry,
+but this is not enforced by the ABI.
+  }];
+}
+
+def SwiftIndirectResultDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``swift_indirect_result`` attribute marks a parameter of a ``swiftcall``
+function as having the special indirect-result ABI treatmenet.
+
+This treatment gives the parameter the target's normal indirect-result
+ABI treatment, which may involve passing it differently from an ordinary
+parameter.  However, only the first indirect result will receive this
+treatment.  Furthermore, low-level lowering may decide that a direct result
+must be returned indirectly; if so, this will take priority over the
+``swift_indirect_result`` parameters.
+
+A ``swift_indirect_result`` parameter must either be the first parameter or
+follow another ``swift_indirect_result`` parameter.
+
+A ``swift_indirect_result`` parameter must have type ``T*`` or ``T&`` for
+some object type ``T``.  If ``T`` is a complete type at the point of
+definition of a function, it is undefined behavior if the argument
+value does not point to storage of adequate size and alignment for a
+value of type ``T``.
+
+Making indirect results explicit in the signature allows C functions to
+directly construct objects into them without relying on language
+optimizations like C++'s named return value optimization (NRVO).
   }];
 }

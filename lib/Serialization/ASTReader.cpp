@@ -2254,9 +2254,10 @@ ASTReader::ReadControlBlock(ModuleFile &F,
               (AllowConfigurationMismatch && Result == ConfigurationMismatch))
             Result = Success;
 
-          // If we've diagnosed a problem, we're done.
-          if (Result != Success &&
-              isDiagnosedResult(Result, ClientLoadCapabilities))
+          // If we can't load the module, exit early since we likely
+          // will rebuild the module anyway. The stream may be in the
+          // middle of a block.
+          if (Result != Success)
             return Result;
         } else if (Stream.SkipBlock()) {
           Error("malformed block record in AST file");
@@ -4052,7 +4053,9 @@ void ASTReader::InitializeContext() {
     if (Module *Imported = getSubmodule(Import.ID)) {
       makeModuleVisible(Imported, Module::AllVisible,
                         /*ImportLoc=*/Import.ImportLoc);
-      PP.makeModuleVisible(Imported, Import.ImportLoc);
+      if (Import.ImportLoc.isValid())
+        PP.makeModuleVisible(Imported, Import.ImportLoc);
+      // FIXME: should we tell Sema to make the module visible too?
     }
   }
   ImportedModules.clear();
@@ -4468,6 +4471,7 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       bool IsExplicit = Record[Idx++];
       bool IsSystem = Record[Idx++];
       bool IsExternC = Record[Idx++];
+      bool IsSwiftInferImportAsMember = Record[Idx++];
       bool InferSubmodules = Record[Idx++];
       bool InferExplicitSubmodules = Record[Idx++];
       bool InferExportWildcard = Record[Idx++];
@@ -4512,6 +4516,7 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       CurrentModule->IsFromModuleFile = true;
       CurrentModule->IsSystem = IsSystem || CurrentModule->IsSystem;
       CurrentModule->IsExternC = IsExternC;
+      CurrentModule->IsSwiftInferImportAsMember = IsSwiftInferImportAsMember;
       CurrentModule->InferSubmodules = InferSubmodules;
       CurrentModule->InferExplicitSubmodules = InferExplicitSubmodules;
       CurrentModule->InferExportWildcard = InferExportWildcard;
@@ -5373,6 +5378,17 @@ QualType ASTReader::readTypeRecord(unsigned Index) {
     SmallVector<QualType, 16> ParamTypes;
     for (unsigned I = 0; I != NumParams; ++I)
       ParamTypes.push_back(readType(*Loc.F, Record, Idx));
+
+    SmallVector<FunctionProtoType::ExtParameterInfo, 4> ExtParameterInfos;
+    if (Idx != Record.size()) {
+      for (unsigned I = 0; I != NumParams; ++I)
+        ExtParameterInfos.push_back(
+          FunctionProtoType::ExtParameterInfo
+                           ::getFromOpaqueValue(Record[Idx++]));
+      EPI.ExtParameterInfos = ExtParameterInfos.data();
+    }
+
+    assert(Idx == Record.size());
 
     return Context.getFunctionType(ResultType, ParamTypes, EPI);
   }

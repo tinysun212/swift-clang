@@ -238,8 +238,14 @@ void ASTTypeWriter::VisitFunctionProtoType(const FunctionProtoType *T) {
   for (unsigned I = 0, N = T->getNumParams(); I != N; ++I)
     Writer.AddTypeRef(T->getParamType(I), Record);
 
+  if (T->hasExtParameterInfos()) {
+    for (unsigned I = 0, N = T->getNumParams(); I != N; ++I)
+      Record.push_back(T->getExtParameterInfo(I).getOpaqueValue());
+  }
+
   if (T->isVariadic() || T->hasTrailingReturn() || T->getTypeQuals() ||
-      T->getRefQualifier() || T->getExceptionSpecType() != EST_None)
+      T->getRefQualifier() || T->getExceptionSpecType() != EST_None ||
+      T->hasExtParameterInfos())
     AbbrevToUse = 0;
 
   Code = TYPE_FUNCTION_PROTO;
@@ -2398,6 +2404,7 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // IsExplicit
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // IsSystem
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // IsExternC
+  Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // IsSwiftInferIAM...
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // InferSubmodules...
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // InferExplicit...
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // InferExportWild...
@@ -2492,9 +2499,9 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
     {
       RecordData::value_type Record[] = {
           SUBMODULE_DEFINITION, ID, ParentID, Mod->IsFramework, Mod->IsExplicit,
-          Mod->IsSystem, Mod->IsExternC, Mod->InferSubmodules,
-          Mod->InferExplicitSubmodules, Mod->InferExportWildcard,
-          Mod->ConfigMacrosExhaustive};
+          Mod->IsSystem, Mod->IsExternC, Mod->IsSwiftInferImportAsMember,
+          Mod->InferSubmodules, Mod->InferExplicitSubmodules,
+          Mod->InferExportWildcard, Mod->ConfigMacrosExhaustive};
       Stream.EmitRecordWithBlob(DefinitionAbbrev, Record, Mod->Name);
     }
 

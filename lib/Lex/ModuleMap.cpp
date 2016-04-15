@@ -154,6 +154,7 @@ static bool isBuiltinHeader(StringRef FileName) {
            .Case("limits.h", true)
            .Case("stdalign.h", true)
            .Case("stdarg.h", true)
+           .Case("stdatomic.h", true)
            .Case("stdbool.h", true)
            .Case("stddef.h", true)
            .Case("stdint.h", true)
@@ -1305,7 +1306,9 @@ namespace {
     /// \brief The 'extern_c' attribute.
     AT_extern_c,
     /// \brief The 'exhaustive' attribute.
-    AT_exhaustive
+    AT_exhaustive,
+    // \brief The 'swift_infer_import_as_member' attribute.
+    AT_swift_infer_import_as_member,
   };
 }
 
@@ -2378,6 +2381,7 @@ bool ModuleMapParser::parseOptionalAttributes(Attributes &Attrs) {
           .Case("exhaustive", AT_exhaustive)
           .Case("extern_c", AT_extern_c)
           .Case("system", AT_system)
+          .Case("swift_infer_import_as_member", AT_swift_infer_import_as_member)
           .Default(AT_unknown);
     switch (Attribute) {
     case AT_unknown:
@@ -2391,6 +2395,10 @@ bool ModuleMapParser::parseOptionalAttributes(Attributes &Attrs) {
 
     case AT_extern_c:
       Attrs.IsExternC = true;
+      break;
+
+    case AT_swift_infer_import_as_member:
+      Attrs.IsSwiftInferImportAsMember = true;
       break;
 
     case AT_exhaustive:

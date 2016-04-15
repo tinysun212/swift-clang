@@ -139,7 +139,9 @@ public:
   /// Parameters involving this type are used to implement data
   /// recursion over Stmts and Exprs within this class, and should
   /// typically not be explicitly specified by derived classes.
-  typedef SmallVectorImpl<Stmt *> DataRecursionQueue;
+  /// The bool bit indicates whether the statement has been traversed or not.
+  typedef SmallVectorImpl<llvm::PointerIntPair<Stmt *, 1, bool>>
+    DataRecursionQueue;
 
   /// \brief Return a reference to the derived class.
   Derived &getDerived() { return *static_cast<Derived *>(this); }
@@ -162,6 +164,18 @@ public:
   /// \returns false if the visitation was terminated early, true
   /// otherwise (including when the argument is nullptr).
   bool TraverseStmt(Stmt *S, DataRecursionQueue *Queue = nullptr);
+
+  /// Invoked before visiting a statement or expression via data recursion.
+  ///
+  /// \returns false to skip visiting the node, true otherwise.
+  bool dataTraverseStmtPre(Stmt *S) { return true; }
+
+  /// Invoked after visiting a statement or expression via data recursion.
+  /// This is not invoked if the previously invoked \c dataTraverseStmtPre
+  /// returned false.
+  ///
+  /// \returns false if the visitation was terminated early, true otherwise.
+  bool dataTraverseStmtPost(Stmt *S) { return true; }
 
   /// \brief Recursively visit a type, by dispatching to
   /// Traverse*Type() based on the argument's getTypeClass() property.
@@ -546,20 +560,32 @@ bool RecursiveASTVisitor<Derived>::TraverseStmt(Stmt *S,
     return true;
 
   if (Queue) {
-    Queue->push_back(S);
+    Queue->push_back({S, false});
     return true;
   }
 
-  SmallVector<Stmt *, 8> LocalQueue;
-  LocalQueue.push_back(S);
+  SmallVector<llvm::PointerIntPair<Stmt *, 1, bool>, 8> LocalQueue;
+  LocalQueue.push_back({S, false});
 
   while (!LocalQueue.empty()) {
-    Stmt *CurrS = LocalQueue.pop_back_val();
+    auto &CurrSAndVisited = LocalQueue.back();
+    Stmt *CurrS = CurrSAndVisited.getPointer();
+    bool Visited = CurrSAndVisited.getInt();
+    if (Visited) {
+      LocalQueue.pop_back();
+      TRY_TO(dataTraverseStmtPost(CurrS));
+      continue;
+    }
 
-    size_t N = LocalQueue.size();
-    TRY_TO(dataTraverseNode(CurrS, &LocalQueue));
-    // Process new children in the order they were added.
-    std::reverse(LocalQueue.begin() + N, LocalQueue.end());
+    if (getDerived().dataTraverseStmtPre(CurrS)) {
+      CurrSAndVisited.setInt(true);
+      size_t N = LocalQueue.size();
+      TRY_TO(dataTraverseNode(CurrS, &LocalQueue));
+      // Process new children in the order they were added.
+      std::reverse(LocalQueue.begin() + N, LocalQueue.end());
+    } else {
+      LocalQueue.pop_back();
+    }
   }
 
   return true;
