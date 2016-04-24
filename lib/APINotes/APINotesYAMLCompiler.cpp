@@ -173,6 +173,7 @@ namespace {
     NullabilitySeq Nullability;
     llvm::Optional<NullabilityKind> NullabilityOfRet;
     AvailabilityItem Availability;
+    bool SwiftPrivate = false;
     StringRef SwiftName;
     api_notes::FactoryAsInitKind FactoryAsInit
       = api_notes::FactoryAsInitKind::Infer;
@@ -185,6 +186,7 @@ namespace {
     StringRef Name;
     llvm::Optional<NullabilityKind> Nullability;
     AvailabilityItem Availability;
+    bool SwiftPrivate = false;
     StringRef SwiftName;
   };
   typedef std::vector<Property> PropertiesSeq;
@@ -193,6 +195,7 @@ namespace {
     StringRef Name;
     bool AuditedForNullability = false;
     AvailabilityItem Availability;
+    bool SwiftPrivate = false;
     StringRef SwiftName;
     StringRef SwiftBridge;
     MethodsSeq Methods;
@@ -205,6 +208,7 @@ namespace {
     NullabilitySeq Nullability;
     llvm::Optional<NullabilityKind> NullabilityOfRet;
     AvailabilityItem Availability;
+    bool SwiftPrivate = false;
     StringRef SwiftName;
   };
   typedef std::vector<Function> FunctionsSeq;
@@ -213,6 +217,7 @@ namespace {
     StringRef Name;
     llvm::Optional<NullabilityKind> Nullability;
     AvailabilityItem Availability;
+    bool SwiftPrivate = false;
     StringRef SwiftName;
   };
   typedef std::vector<GlobalVariable> GlobalVariablesSeq;
@@ -220,6 +225,7 @@ namespace {
   struct EnumConstant {
     StringRef Name;
     AvailabilityItem Availability;
+    bool SwiftPrivate = false;
     StringRef SwiftName;
   };
   typedef std::vector<EnumConstant> EnumConstantsSeq;
@@ -228,6 +234,7 @@ namespace {
     StringRef Name;
     AvailabilityItem Availability;
     StringRef SwiftName;
+    bool SwiftPrivate = false;
     StringRef SwiftBridge;
   };
   typedef std::vector<Tag> TagsSeq;
@@ -236,6 +243,7 @@ namespace {
     StringRef Name;
     AvailabilityItem Availability;
     StringRef SwiftName;
+    bool SwiftPrivate = false;
     StringRef SwiftBridge;
   };
   typedef std::vector<Typedef> TypedefsSeq;
@@ -320,6 +328,7 @@ namespace llvm {
                                           AbsentNullability);
         io.mapOptional("Availability",    p.Availability.Mode);
         io.mapOptional("AvailabilityMsg", p.Availability.Msg);
+        io.mapOptional("SwiftPrivate",    p.SwiftPrivate);
         io.mapOptional("SwiftName",       p.SwiftName);
       }
     };
@@ -334,6 +343,7 @@ namespace llvm {
                                             AbsentNullability);
         io.mapOptional("Availability",    m.Availability.Mode);
         io.mapOptional("AvailabilityMsg", m.Availability.Msg);
+        io.mapOptional("SwiftPrivate",    m.SwiftPrivate);
         io.mapOptional("SwiftName",       m.SwiftName);
         io.mapOptional("FactoryAsInit",   m.FactoryAsInit,
                                           api_notes::FactoryAsInitKind::Infer);
@@ -349,6 +359,7 @@ namespace llvm {
         io.mapOptional("AuditedForNullability", c.AuditedForNullability, false);
         io.mapOptional("Availability",          c.Availability.Mode);
         io.mapOptional("AvailabilityMsg",       c.Availability.Msg);
+        io.mapOptional("SwiftPrivate",          c.SwiftPrivate);
         io.mapOptional("SwiftName",             c.SwiftName);
         io.mapOptional("SwiftBridge",           c.SwiftBridge);
         io.mapOptional("Methods",               c.Methods);
@@ -365,6 +376,7 @@ namespace llvm {
                                            AbsentNullability);
         io.mapOptional("Availability",     f.Availability.Mode);
         io.mapOptional("AvailabilityMsg",  f.Availability.Msg);
+        io.mapOptional("SwiftPrivate",     f.SwiftPrivate);
         io.mapOptional("SwiftName",        f.SwiftName);
       }
     };
@@ -377,6 +389,7 @@ namespace llvm {
                                           AbsentNullability);
         io.mapOptional("Availability",    v.Availability.Mode);
         io.mapOptional("AvailabilityMsg", v.Availability.Msg);
+        io.mapOptional("SwiftPrivate",    v.SwiftPrivate);
         io.mapOptional("SwiftName",       v.SwiftName);
       }
     };
@@ -387,6 +400,7 @@ namespace llvm {
         io.mapRequired("Name",            v.Name);
         io.mapOptional("Availability",    v.Availability.Mode);
         io.mapOptional("AvailabilityMsg", v.Availability.Msg);
+        io.mapOptional("SwiftPrivate",    v.SwiftPrivate);
         io.mapOptional("SwiftName",       v.SwiftName);
       }
     };
@@ -397,6 +411,7 @@ namespace llvm {
         io.mapRequired("Name",                  t.Name);
         io.mapOptional("Availability",          t.Availability.Mode);
         io.mapOptional("AvailabilityMsg",       t.Availability.Msg);
+        io.mapOptional("SwiftPrivate",          t.SwiftPrivate);
         io.mapOptional("SwiftName",             t.SwiftName);
         io.mapOptional("SwiftBridge",           t.SwiftBridge);
       }
@@ -408,6 +423,7 @@ namespace llvm {
         io.mapRequired("Name",                  t.Name);
         io.mapOptional("Availability",          t.Availability.Mode);
         io.mapOptional("AvailabilityMsg",       t.Availability.Msg);
+        io.mapOptional("SwiftPrivate",          t.SwiftPrivate);
         io.mapOptional("SwiftName",             t.SwiftName);
         io.mapOptional("SwiftBridge",           t.SwiftBridge);
       }
@@ -542,6 +558,7 @@ namespace {
         return true;
 
       convertAvailability(common.Availability, info, apiName);
+      info.SwiftPrivate = common.SwiftPrivate;
       info.SwiftName = common.SwiftName;
       return false;
     }
@@ -643,6 +660,7 @@ namespace {
         if (!isAvailable(prop.Availability))
           continue;
         convertAvailability(prop.Availability, pInfo, prop.Name);
+        pInfo.SwiftPrivate = prop.SwiftPrivate;
         pInfo.SwiftName = prop.SwiftName;
         if (prop.Nullability)
           pInfo.setNullabilityAudited(*prop.Nullability);
@@ -697,6 +715,7 @@ namespace {
         if (!isAvailable(global.Availability))
           continue;
         convertAvailability(global.Availability, info, global.Name);
+        info.SwiftPrivate = global.SwiftPrivate;
         info.SwiftName = global.SwiftName;
         if (global.Nullability)
           info.setNullabilityAudited(*global.Nullability);
@@ -717,6 +736,7 @@ namespace {
         if (!isAvailable(function.Availability))
           continue;
         convertAvailability(function.Availability, info, function.Name);
+        info.SwiftPrivate = function.SwiftPrivate;
         info.SwiftName = function.SwiftName;
         convertNullability(function.Nullability,
                            function.NullabilityOfRet,
@@ -739,6 +759,7 @@ namespace {
         if (!isAvailable(enumConstant.Availability))
           continue;
         convertAvailability(enumConstant.Availability, info, enumConstant.Name);
+        info.SwiftPrivate = enumConstant.SwiftPrivate;
         info.SwiftName = enumConstant.SwiftName;
         Writer->addEnumConstant(enumConstant.Name, info);
       }
@@ -748,7 +769,7 @@ namespace {
       for (const auto &t : TheModule.Tags) {
         // Check for duplicate tag definitions.
         if (!knownTags.insert(t.Name).second) {
-          emitError("multiple definitions of tag '" + t.Name + "'");
+          emitError("multiple definitions Of tag '" + t.Name + "'");
           continue;
         }
 
@@ -860,6 +881,7 @@ namespace {
     template<typename T>
     void handleCommon(T &record, const CommonEntityInfo &info) {
       handleAvailability(record.Availability, info);
+      record.SwiftPrivate = info.SwiftPrivate;
       record.SwiftName = copyString(info.SwiftName);
     }
 
