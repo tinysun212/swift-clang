@@ -50,6 +50,18 @@ public:
   /// \param IsSystem Whether this is a module map from a system include path.
   virtual void moduleMapFileRead(SourceLocation FileStart,
                                  const FileEntry &File, bool IsSystem) {}
+
+  /// \brief Called when a header is added during module map parsing.
+  ///
+  /// \param Filename The header file itself.
+  virtual void moduleMapAddHeader(StringRef Filename) {}
+
+  /// \brief Called when an umbrella header is added during module map parsing.
+  ///
+  /// \param FileMgr FileManager instance
+  /// \param Header The umbreall header to collect.
+  virtual void moduleMapAddUmbrellaHeader(FileManager *FileMgr,
+                                          const FileEntry *Header) {}
 };
   
 class ModuleMap {

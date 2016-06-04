@@ -743,13 +743,15 @@ Module *ModuleMap::inferFrameworkModule(const DirectoryEntry *FrameworkDir,
     = StringRef(FrameworkDir->getName());
   llvm::sys::path::append(SubframeworksDirName, "Frameworks");
   llvm::sys::path::native(SubframeworksDirName);
-  for (llvm::sys::fs::directory_iterator Dir(SubframeworksDirName, EC), DirEnd;
+  vfs::FileSystem &FS = *FileMgr.getVirtualFileSystem();
+  for (vfs::directory_iterator Dir = FS.dir_begin(SubframeworksDirName, EC),
+                               DirEnd;
        Dir != DirEnd && !EC; Dir.increment(EC)) {
-    if (!StringRef(Dir->path()).endswith(".framework"))
+    if (!StringRef(Dir->getName()).endswith(".framework"))
       continue;
 
-    if (const DirectoryEntry *SubframeworkDir
-          = FileMgr.getDirectory(Dir->path())) {
+    if (const DirectoryEntry *SubframeworkDir =
+            FileMgr.getDirectory(Dir->getName())) {
       // Note: as an egregious but useful hack, we use the real path here and
       // check whether it is actually a subdirectory of the parent directory.
       // This will not be the case if the 'subframework' is actually a symlink
@@ -792,6 +794,10 @@ void ModuleMap::setUmbrellaHeader(Module *Mod, const FileEntry *UmbrellaHeader,
   Mod->Umbrella = UmbrellaHeader;
   Mod->UmbrellaAsWritten = NameAsWritten.str();
   UmbrellaDirs[UmbrellaHeader->getDir()] = Mod;
+
+  // Notify callbacks that we just added a new header.
+  for (const auto &Cb : Callbacks)
+    Cb->moduleMapAddUmbrellaHeader(&SourceMgr.getFileManager(), UmbrellaHeader);
 }
 
 void ModuleMap::setUmbrellaDir(Module *Mod, const DirectoryEntry *UmbrellaDir,
@@ -837,6 +843,10 @@ void ModuleMap::addHeader(Module *Mod, Module::Header Header,
     HeaderInfo.MarkFileModuleHeader(Header.Entry, Role,
                                     isCompilingModuleHeader);
   }
+
+  // Notify callbacks that we just added a new header.
+  for (const auto &Cb : Callbacks)
+    Cb->moduleMapAddHeader(Header.Entry->getName());
 }
 
 void ModuleMap::excludeHeader(Module *Mod, Module::Header Header) {
@@ -871,7 +881,7 @@ void ModuleMap::setInferredModuleAllowedBy(Module *M, const FileEntry *ModMap) {
   InferredModuleAllowedBy[M] = ModMap;
 }
 
-void ModuleMap::dump() {
+LLVM_DUMP_METHOD void ModuleMap::dump() {
   llvm::errs() << "Modules:";
   for (llvm::StringMap<Module *>::iterator M = Modules.begin(), 
                                         MEnd = Modules.end(); 
@@ -1967,11 +1977,13 @@ void ModuleMapParser::parseUmbrellaDirDecl(SourceLocation UmbrellaLoc) {
     // uncommonly used Tcl module on Darwin platforms.
     std::error_code EC;
     SmallVector<Module::Header, 6> Headers;
-    for (llvm::sys::fs::recursive_directory_iterator I(Dir->getName(), EC), E;
+    vfs::FileSystem &FS = *SourceMgr.getFileManager().getVirtualFileSystem();
+    for (vfs::recursive_directory_iterator I(FS, Dir->getName(), EC), E;
          I != E && !EC; I.increment(EC)) {
-      if (const FileEntry *FE = SourceMgr.getFileManager().getFile(I->path())) {
+      if (const FileEntry *FE =
+              SourceMgr.getFileManager().getFile(I->getName())) {
 
-        Module::Header Header = {I->path(), FE};
+        Module::Header Header = {I->getName(), FE};
         Headers.push_back(std::move(Header));
       }
     }

@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.RetainCount,debug.ExprInspection -analyzer-store=region -verify -Wno-objc-root-class %s
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.RetainCount,debug.ExprInspection -analyzer-store=region -verify -Wno-objc-root-class -fobjc-arc %s
+// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.RetainCount,osx.cocoa.Dealloc,debug.ExprInspection -analyzer-store=region -verify -Wno-objc-root-class %s
+// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.RetainCount,osx.cocoa.Dealloc,debug.ExprInspection -analyzer-store=region -verify -Wno-objc-root-class -fobjc-arc %s
 
 void clang_analyzer_eval(int);
 
@@ -22,6 +22,7 @@ typedef struct _NSZone NSZone;
 -(id)copy;
 -(id)retain;
 -(oneway void)release;
+-(void)dealloc;
 @end
 @interface NSString : NSObject <NSCopying, NSMutableCopying, NSCoding>
 - (NSUInteger)length;
@@ -138,6 +139,14 @@ NSNumber* numberFromMyNumberProperty(MyNumber* aMyNumber)
 
 @implementation Person
 @synthesize name = _name;
+
+-(void)dealloc {
+#if !__has_feature(objc_arc)
+  self.name = [[NSString alloc] init]; // expected-warning {{leak}}
+
+  [super dealloc]; // expected-warning {{The '_name' ivar in 'Person' was retained by a synthesized property but not released before '[super dealloc]}}
+#endif
+}
 @end
 
 #if !__has_feature(objc_arc)
@@ -236,6 +245,143 @@ void testConsistencyAssign(Person *p) {
   (void)[self someProp];
   clang_analyzer_eval(_f == 2); // expected-warning{{TRUE}}
 }
+@end
+
+// Tests for the analyzer fix that works around a Sema bug
+// where multiple methods are created for properties in class extensions that
+// are redeclared in a category method.
+// The Sema bug is tracked as <rdar://problem/25481164>.
+@interface ClassWithRedeclaredPropertyInExtensionFollowedByCategory
+@end
+
+@interface ClassWithRedeclaredPropertyInExtensionFollowedByCategory ()
+@end
+
+@interface ClassWithRedeclaredPropertyInExtensionFollowedByCategory ()
+@property (readwrite) int someProp;
+@property (readonly) int otherProp;
+@end
+
+@interface ClassWithRedeclaredPropertyInExtensionFollowedByCategory (MyCat)
+@property (readonly) int someProp;
+@property (readonly) int otherProp;
+@end
+
+@implementation ClassWithRedeclaredPropertyInExtensionFollowedByCategory
+- (void)testSynthesisForRedeclaredProperties; {
+  clang_analyzer_eval(self.someProp == self.someProp); // expected-warning{{TRUE}}
+  clang_analyzer_eval([self someProp] == self.someProp); // expected-warning{{TRUE}}
+
+  clang_analyzer_eval(self.otherProp == self.otherProp); // expected-warning{{TRUE}}
+  clang_analyzer_eval([self otherProp] == self.otherProp); // expected-warning{{TRUE}}
+}
+@end
+
+// The relative order of the extension and the category matter, so test both.
+@interface ClassWithRedeclaredPropertyInCategoryFollowedByExtension
+@end
+
+@interface ClassWithRedeclaredPropertyInCategoryFollowedByExtension ()
+@property (readwrite) int someProp;
+@end
+
+@interface ClassWithRedeclaredPropertyInCategoryFollowedByExtension (MyCat)
+@property (readonly) int someProp;
+@end
+
+@implementation ClassWithRedeclaredPropertyInCategoryFollowedByExtension
+- (void)testSynthesisForRedeclaredProperties; {
+  clang_analyzer_eval(self.someProp == self.someProp); // expected-warning{{TRUE}}
+  clang_analyzer_eval([self someProp] == self.someProp); // expected-warning{{TRUE}}
+}
+@end
+
+@interface ClassWithSynthesizedPropertyAndGetter
+@property (readonly) int someProp;
+@end
+
+@implementation ClassWithSynthesizedPropertyAndGetter
+@synthesize someProp;
+
+// Make sure that the actual getter is inlined and not a getter created
+// by BodyFarm
+- (void)testBodyFarmGetterNotUsed {
+  int i = self.someProp;
+  clang_analyzer_eval(i == 22); // expected-warning {{TRUE}}
+}
+
+-(int)someProp {
+  return 22;
+}
+@end
+
+//------
+// Setter ivar invalidation.
+//------
+
+@interface ClassWithSetters
+// Note: These properties have implicit @synthesize implementations to be
+// backed with ivars.
+@property (assign) int propWithIvar1;
+@property (assign) int propWithIvar2;
+
+@property (retain) NSNumber *retainedProperty;
+
+@end
+
+@interface ClassWithSetters (InOtherTranslationUnit)
+// The implementation of this property is in another translation unit.
+// We don't know whether it is backed by an ivar or not.
+@property (assign) int propInOther;
+@end
+
+@implementation ClassWithSetters
+- (void) testSettingPropWithIvarInvalidatesExactlyThatIvar; {
+  _propWithIvar1 = 1;
+  _propWithIvar2 = 2;
+  self.propWithIvar1 = 66;
+
+  // Calling the setter of a property backed by the instance variable
+  // should invalidate the storage for the instance variable but not
+  // the rest of the receiver. Ideally we would model the setter completely
+  // but doing so would cause the new value to escape when it is bound
+  // to the ivar. This would cause bad false negatives in the retain count
+  // checker. (There is a test for this scenario in
+  // testWriteRetainedValueToRetainedProperty below).
+  clang_analyzer_eval(_propWithIvar1 == 66); // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(_propWithIvar2 == 2);  // expected-warning{{TRUE}}
+
+  _propWithIvar1 = 1;
+  [self setPropWithIvar1:66];
+
+  clang_analyzer_eval(_propWithIvar1 == 66); // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(_propWithIvar2 == 2);  // expected-warning{{TRUE}}
+}
+
+- (void) testSettingPropWithoutIvarInvalidatesEntireInstance; {
+  _propWithIvar1 = 1;
+  _propWithIvar2 = 2;
+  self.propInOther = 66;
+
+  clang_analyzer_eval(_propWithIvar1 == 66); // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(_propWithIvar2 == 2);  // expected-warning{{UNKNOWN}}
+
+  _propWithIvar1 = 1;
+  _propWithIvar2 = 2;
+  [self setPropInOther:66];
+
+  clang_analyzer_eval(_propWithIvar1 == 66); // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(_propWithIvar2 == 2);  // expected-warning{{UNKNOWN}}
+}
+
+#if !__has_feature(objc_arc)
+- (void) testWriteRetainedValueToRetainedProperty; {
+  NSNumber *number = [[NSNumber alloc] initWithInteger:5]; // expected-warning {{Potential leak of an object stored into 'number'}}
+
+  // Make sure we catch this leak.
+  self.retainedProperty = number;
+}
+#endif
 @end
 
 #if !__has_feature(objc_arc)

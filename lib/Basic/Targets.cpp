@@ -209,6 +209,10 @@ static void getDarwinDefines(MacroBuilder &Builder, const LangOptions &Opts,
   if (Triple.isOSDarwin())
     Builder.defineMacro("__MACH__");
 
+  // The Watch ABI uses Dwarf EH.
+  if(Triple.isWatchABI())
+    Builder.defineMacro("__ARM_DWARF_EH__");
+
   PlatformMinVersion = VersionTuple(Maj, Min, Rev);
 }
 
@@ -263,6 +267,13 @@ public:
   /// attribute on declarations that can be dynamically replaced.
   bool hasProtectedVisibility() const override {
     return false;
+  }
+
+  unsigned getExnObjectAlignment() const override {
+    // The alignment of an exception object is 8-bytes for darwin since
+    // libc++abi doesn't declare _Unwind_Exception with __attribute__((aligned))
+    // and therefore doesn't guarantee 16-byte alignment.
+    return  64;
   }
 };
 
@@ -4023,7 +4034,7 @@ public:
   }
 
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
-   switch (CC) {
+    switch (CC) {
     case CC_C:
     case CC_Swift:
     case CC_X86VectorCall:
@@ -4818,13 +4829,14 @@ public:
     if (ABI == "aapcs" || ABI == "aapcs-linux" || ABI == "aapcs-vfp") {
       // Embedded targets on Darwin follow AAPCS, but not EABI.
       // Windows on ARM follows AAPCS VFP, but does not conform to EABI.
-      if (!getTriple().isOSDarwin() && !getTriple().isOSWindows())
+      if (!getTriple().isOSBinFormatMachO() && !getTriple().isOSWindows())
         Builder.defineMacro("__ARM_EABI__");
       Builder.defineMacro("__ARM_PCS", "1");
-
-      if ((!SoftFloat && !SoftFloatABI) || ABI == "aapcs-vfp")
-        Builder.defineMacro("__ARM_PCS_VFP", "1");
     }
+
+    if ((!SoftFloat && !SoftFloatABI) || ABI == "aapcs-vfp" ||
+        ABI == "aapcs16")
+      Builder.defineMacro("__ARM_PCS_VFP", "1");
 
     if (SoftFloat)
       Builder.defineMacro("__SOFTFP__");
@@ -6258,6 +6270,16 @@ public:
         .Case("htm", HasTransactionalExecution)
         .Case("vx", HasVector)
         .Default(false);
+  }
+
+  CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
+    switch (CC) {
+    case CC_C:
+    case CC_Swift:
+      return CCCR_OK;
+    default:
+      return CCCR_Warning;
+    }
   }
 
   StringRef getABI() const override {

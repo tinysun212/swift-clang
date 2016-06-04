@@ -171,7 +171,7 @@ bool ABIInfo::shouldSignExtUnsignedType(QualType Ty) const {
   return false;
 }
 
-void ABIArgInfo::dump() const {
+LLVM_DUMP_METHOD void ABIArgInfo::dump() const {
   raw_ostream &OS = llvm::errs();
   OS << "(ABIArgInfo Kind=";
   switch (TheKind) {
@@ -4030,8 +4030,19 @@ bool ABIInfo::isHomogeneousAggregate(QualType Ty, const Type *&Base,
     // agree in both total size and mode (float vs. vector) are
     // treated as being equivalent here.
     const Type *TyPtr = Ty.getTypePtr();
-    if (!Base)
+    if (!Base) {
       Base = TyPtr;
+      // If it's a non-power-of-2 vector, its size is already a power-of-2,
+      // so make sure to widen it explicitly.
+      if (const VectorType *VT = Base->getAs<VectorType>()) {
+        QualType EltTy = VT->getElementType();
+        unsigned NumElements =
+            getContext().getTypeSize(VT) / getContext().getTypeSize(EltTy);
+        Base = getContext()
+                   .getVectorType(EltTy, NumElements, VT->getVectorKind())
+                   .getTypePtr();
+      }
+    }
 
     if (Base->isVectorType() != TyPtr->isVectorType() ||
         getContext().getTypeSize(Base) != getContext().getTypeSize(TyPtr))
@@ -5627,12 +5638,12 @@ void NVPTXTargetCodeGenInfo::addNVVMMetadata(llvm::Function *F, StringRef Name,
 
 namespace {
 
-class SystemZABIInfo : public ABIInfo {
+class SystemZABIInfo : public SwiftABIInfo {
   bool HasVector;
 
 public:
   SystemZABIInfo(CodeGenTypes &CGT, bool HV)
-    : ABIInfo(CGT), HasVector(HV) {}
+    : SwiftABIInfo(CGT), HasVector(HV) {}
 
   bool isPromotableIntegerType(QualType Ty) const;
   bool isCompoundType(QualType Ty) const;
@@ -5652,6 +5663,12 @@ public:
 
   Address EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
                     QualType Ty) const override;
+
+  bool shouldPassIndirectlyForSwift(CharUnits totalSize,
+                                    ArrayRef<llvm::Type*> scalars,
+                                    bool asReturnValue) const override {
+    return occupiesMoreThan(CGT, scalars, /*total*/ 4);
+  }
 };
 
 class SystemZTargetCodeGenInfo : public TargetCodeGenInfo {

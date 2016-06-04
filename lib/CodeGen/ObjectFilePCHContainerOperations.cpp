@@ -151,7 +151,7 @@ public:
     CodeGenOpts.CodeModel = "default";
     CodeGenOpts.ThreadModel = "single";
     CodeGenOpts.DebugTypeExtRefs = true;
-    CodeGenOpts.setDebugInfo(CodeGenOptions::FullDebugInfo);
+    CodeGenOpts.setDebugInfo(codegenoptions::FullDebugInfo);
   }
 
   ~PCHContainerGenerator() override = default;
@@ -200,6 +200,15 @@ public:
     // Anonymous tag decls are deferred until we are building their declcontext.
     if (D->getName().empty())
       return;
+
+    // Defer tag decls until their declcontext is complete.
+    auto *DeclCtx = D->getDeclContext();
+    while (DeclCtx) {
+      if (auto *D = dyn_cast<TagDecl>(DeclCtx))
+        if (!D->isCompleteDefinition())
+          return;
+      DeclCtx = DeclCtx->getParent();
+    }
 
     DebugTypeVisitor DTV(*Builder->getModuleDebugInfo(), *Ctx);
     DTV.TraverseDecl(D);

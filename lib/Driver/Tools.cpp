@@ -738,7 +738,12 @@ arm::FloatABI arm::getARMFloatABI(const ToolChain &TC, const ArgList &Args) {
         break;
       default:
         // Assume "soft", but warn the user we are guessing.
-        ABI = FloatABI::Soft;
+        if (Triple.isOSBinFormatMachO() &&
+            Triple.getSubArch() == llvm::Triple::ARMSubArch_v7em)
+          ABI = FloatABI::Hard;
+        else
+          ABI = FloatABI::Soft;
+
         if (Triple.getOS() != llvm::Triple::UnknownOS ||
             !Triple.isOSBinFormatMachO())
           D.Diag(diag::warn_drv_assuming_mfloat_abi_is) << "soft";
@@ -2117,10 +2122,13 @@ static bool DecodeAArch64Mcpu(const Driver &D, StringRef Mcpu, StringRef &CPU,
                               std::vector<const char *> &Features) {
   std::pair<StringRef, StringRef> Split = Mcpu.split("+");
   CPU = Split.first;
-  if (CPU == "cyclone" || CPU == "cortex-a53" || CPU == "cortex-a57" ||
-      CPU == "cortex-a72" || CPU == "cortex-a35" || CPU == "exynos-m1") {
+  if (CPU == "cortex-a53" || CPU == "cortex-a57" || CPU == "cortex-a72" ||
+      CPU == "cortex-a35" || CPU == "exynos-m1") {
     Features.push_back("+neon");
     Features.push_back("+crc");
+    Features.push_back("+crypto");
+  } else if (CPU == "cyclone") {
+    Features.push_back("+neon");
     Features.push_back("+crypto");
   } else if (CPU == "generic") {
     Features.push_back("+neon");
@@ -2496,16 +2504,16 @@ static bool UseRelaxAll(Compilation &C, const ArgList &Args) {
 
 // Convert an arg of the form "-gN" or "-ggdbN" or one of their aliases
 // to the corresponding DebugInfoKind.
-static CodeGenOptions::DebugInfoKind DebugLevelToInfoKind(const Arg &A) {
+static codegenoptions::DebugInfoKind DebugLevelToInfoKind(const Arg &A) {
   assert(A.getOption().matches(options::OPT_gN_Group) &&
          "Not a -g option that specifies a debug-info level");
   if (A.getOption().matches(options::OPT_g0) ||
       A.getOption().matches(options::OPT_ggdb0))
-    return CodeGenOptions::NoDebugInfo;
+    return codegenoptions::NoDebugInfo;
   if (A.getOption().matches(options::OPT_gline_tables_only) ||
       A.getOption().matches(options::OPT_ggdb1))
-    return CodeGenOptions::DebugLineTablesOnly;
-  return CodeGenOptions::LimitedDebugInfo;
+    return codegenoptions::DebugLineTablesOnly;
+  return codegenoptions::LimitedDebugInfo;
 }
 
 // Extract the integer N from a string spelled "-dwarf-N", returning 0
@@ -2521,17 +2529,17 @@ static unsigned DwarfVersionNum(StringRef ArgValue) {
 }
 
 static void RenderDebugEnablingArgs(const ArgList &Args, ArgStringList &CmdArgs,
-                                    CodeGenOptions::DebugInfoKind DebugInfoKind,
+                                    codegenoptions::DebugInfoKind DebugInfoKind,
                                     unsigned DwarfVersion,
                                     llvm::DebuggerKind DebuggerTuning) {
   switch (DebugInfoKind) {
-  case CodeGenOptions::DebugLineTablesOnly:
+  case codegenoptions::DebugLineTablesOnly:
     CmdArgs.push_back("-debug-info-kind=line-tables-only");
     break;
-  case CodeGenOptions::LimitedDebugInfo:
+  case codegenoptions::LimitedDebugInfo:
     CmdArgs.push_back("-debug-info-kind=limited");
     break;
-  case CodeGenOptions::FullDebugInfo:
+  case codegenoptions::FullDebugInfo:
     CmdArgs.push_back("-debug-info-kind=standalone");
     break;
   default:
@@ -2668,9 +2676,9 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
         if (DwarfVersion == 0) { // Send it onward, and let cc1as complain.
           CmdArgs.push_back(Value.data());
         } else {
-          RenderDebugEnablingArgs(
-              Args, CmdArgs, CodeGenOptions::LimitedDebugInfo, DwarfVersion,
-              llvm::DebuggerKind::Default);
+          RenderDebugEnablingArgs(Args, CmdArgs,
+                                  codegenoptions::LimitedDebugInfo,
+                                  DwarfVersion, llvm::DebuggerKind::Default);
         }
       } else if (Value.startswith("-mcpu") || Value.startswith("-mfpu") ||
                  Value.startswith("-mhwdiv") || Value.startswith("-march")) {
@@ -2943,6 +2951,8 @@ static bool shouldUseFramePointerForTarget(const ArgList &Args,
     switch (Triple.getArch()) {
     case llvm::Triple::x86:
       return !areOptimizationsEnabled(Args);
+    case llvm::Triple::x86_64:
+      return Triple.isOSBinFormatMachO();
     case llvm::Triple::arm:
     case llvm::Triple::thumb:
       // Windows on ARM builds with FPO disabled to aid fast stack walking
@@ -3618,6 +3628,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 // Disable the verification pass in -asserts builds.
 #ifdef NDEBUG
   CmdArgs.push_back("-disable-llvm-verifier");
+  // Discard LLVM value names in -asserts builds.
+  CmdArgs.push_back("-discard-value-names");
 #endif
 
   // Set the main file name, so that debug info works even with
@@ -4097,8 +4109,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   unsigned DwarfVersion = 0;
   llvm::DebuggerKind DebuggerTuning = getToolChain().getDefaultDebuggerTuning();
   // These two are potentially updated by AddClangCLArgs.
-  enum CodeGenOptions::DebugInfoKind DebugInfoKind =
-      CodeGenOptions::NoDebugInfo;
+  codegenoptions::DebugInfoKind DebugInfoKind = codegenoptions::NoDebugInfo;
   bool EmitCodeView = false;
 
   // Add clang-cl arguments.
@@ -4153,12 +4164,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       // If you say "-gsplit-dwarf -gline-tables-only", -gsplit-dwarf loses.
       // But -gsplit-dwarf is not a g_group option, hence we have to check the
       // order explicitly. (If -gsplit-dwarf wins, we fix DebugInfoKind later.)
-      if (SplitDwarfArg && DebugInfoKind < CodeGenOptions::LimitedDebugInfo &&
+      if (SplitDwarfArg && DebugInfoKind < codegenoptions::LimitedDebugInfo &&
           A->getIndex() > SplitDwarfArg->getIndex())
         SplitDwarfArg = nullptr;
     } else
       // For any other 'g' option, use Limited.
-      DebugInfoKind = CodeGenOptions::LimitedDebugInfo;
+      DebugInfoKind = codegenoptions::LimitedDebugInfo;
   }
 
   // If a debugger tuning argument appeared, remember it.
@@ -4183,7 +4194,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     // DwarfVersion remains at 0 if no explicit choice was made.
     CmdArgs.push_back("-gcodeview");
   } else if (DwarfVersion == 0 &&
-             DebugInfoKind != CodeGenOptions::NoDebugInfo) {
+             DebugInfoKind != codegenoptions::NoDebugInfo) {
     DwarfVersion = getToolChain().GetDefaultDwarfVersion();
   }
 
@@ -4197,7 +4208,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   // FIXME: Move backend command line options to the module.
   if (Args.hasArg(options::OPT_gmodules)) {
-    DebugInfoKind = CodeGenOptions::LimitedDebugInfo;
+    DebugInfoKind = codegenoptions::LimitedDebugInfo;
     CmdArgs.push_back("-dwarf-ext-refs");
     CmdArgs.push_back("-fmodule-format=obj");
   }
@@ -4206,7 +4217,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // splitting and extraction.
   // FIXME: Currently only works on Linux.
   if (getToolChain().getTriple().isOSLinux() && SplitDwarfArg) {
-    DebugInfoKind = CodeGenOptions::LimitedDebugInfo;
+    DebugInfoKind = codegenoptions::LimitedDebugInfo;
     CmdArgs.push_back("-backend-option");
     CmdArgs.push_back("-split-dwarf=Enable");
   }
@@ -4219,8 +4230,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   bool NeedFullDebug = Args.hasFlag(options::OPT_fstandalone_debug,
                                     options::OPT_fno_standalone_debug,
                                     getToolChain().GetDefaultStandaloneDebug());
-  if (DebugInfoKind == CodeGenOptions::LimitedDebugInfo && NeedFullDebug)
-    DebugInfoKind = CodeGenOptions::FullDebugInfo;
+  if (DebugInfoKind == codegenoptions::LimitedDebugInfo && NeedFullDebug)
+    DebugInfoKind = codegenoptions::FullDebugInfo;
   RenderDebugEnablingArgs(Args, CmdArgs, DebugInfoKind, DwarfVersion,
                           DebuggerTuning);
 
@@ -5367,43 +5378,27 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-fno-diagnostics-show-note-include-stack");
   }
 
-  // Color diagnostics are the default, unless the terminal doesn't support
-  // them.
-  // Support both clang's -f[no-]color-diagnostics and gcc's
-  // -f[no-]diagnostics-colors[=never|always|auto].
-  enum { Colors_On, Colors_Off, Colors_Auto } ShowColors = Colors_Auto;
-  for (const auto &Arg : Args) {
-    const Option &O = Arg->getOption();
+  // Color diagnostics are parsed by the driver directly from argv
+  // and later re-parsed to construct this job; claim any possible
+  // color diagnostic here to avoid warn_drv_unused_argument and
+  // diagnose bad OPT_fdiagnostics_color_EQ values.
+  for (Arg *A : Args) {
+    const Option &O = A->getOption();
     if (!O.matches(options::OPT_fcolor_diagnostics) &&
         !O.matches(options::OPT_fdiagnostics_color) &&
         !O.matches(options::OPT_fno_color_diagnostics) &&
         !O.matches(options::OPT_fno_diagnostics_color) &&
         !O.matches(options::OPT_fdiagnostics_color_EQ))
       continue;
-
-    Arg->claim();
-    if (O.matches(options::OPT_fcolor_diagnostics) ||
-        O.matches(options::OPT_fdiagnostics_color)) {
-      ShowColors = Colors_On;
-    } else if (O.matches(options::OPT_fno_color_diagnostics) ||
-               O.matches(options::OPT_fno_diagnostics_color)) {
-      ShowColors = Colors_Off;
-    } else {
-      assert(O.matches(options::OPT_fdiagnostics_color_EQ));
-      StringRef value(Arg->getValue());
-      if (value == "always")
-        ShowColors = Colors_On;
-      else if (value == "never")
-        ShowColors = Colors_Off;
-      else if (value == "auto")
-        ShowColors = Colors_Auto;
-      else
+    if (O.matches(options::OPT_fdiagnostics_color_EQ)) {
+      StringRef Value(A->getValue());
+      if (Value != "always" && Value != "never" && Value != "auto")
         getToolChain().getDriver().Diag(diag::err_drv_clang_unsupported)
-            << ("-fdiagnostics-color=" + value).str();
+              << ("-fdiagnostics-color=" + Value).str();
     }
+    A->claim();
   }
-  if (ShowColors == Colors_On ||
-      (ShowColors == Colors_Auto && llvm::sys::Process::StandardErrHasColors()))
+  if (D.getDiags().getDiagnosticOptions().ShowColors)
     CmdArgs.push_back("-fcolor-diagnostics");
 
   if (Args.hasArg(options::OPT_fansi_escape_codes))
@@ -5836,7 +5831,7 @@ static EHFlags parseClangCLEHFlags(const Driver &D, const ArgList &Args) {
 }
 
 void Clang::AddClangCLArgs(const ArgList &Args, ArgStringList &CmdArgs,
-                           enum CodeGenOptions::DebugInfoKind *DebugInfoKind,
+                           codegenoptions::DebugInfoKind *DebugInfoKind,
                            bool *EmitCodeView) const {
   unsigned RTOptionID = options::OPT__SLASH_MT;
 
@@ -5906,7 +5901,7 @@ void Clang::AddClangCLArgs(const ArgList &Args, ArgStringList &CmdArgs,
   // If we are emitting CV but not DWARF, don't build information that LLVM
   // can't yet process.
   if (*EmitCodeView && !EmitDwarf)
-    *DebugInfoKind = CodeGenOptions::DebugLineTablesOnly;
+    *DebugInfoKind = codegenoptions::DebugLineTablesOnly;
   if (*EmitCodeView)
     CmdArgs.push_back("-gcodeview");
 
@@ -6056,24 +6051,28 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
 
   // Forward -g and handle debug info related flags, assuming we are dealing
   // with an actual assembly file.
+  bool WantDebug = false;
+  unsigned DwarfVersion = 0;
+  Args.ClaimAllArgs(options::OPT_g_Group);
+  if (Arg *A = Args.getLastArg(options::OPT_g_Group)) {
+    WantDebug = !A->getOption().matches(options::OPT_g0) &&
+                !A->getOption().matches(options::OPT_ggdb0);
+    if (WantDebug)
+      DwarfVersion = DwarfVersionNum(A->getSpelling());
+  }
+  if (DwarfVersion == 0)
+    DwarfVersion = getToolChain().GetDefaultDwarfVersion();
+
+  codegenoptions::DebugInfoKind DebugInfoKind = codegenoptions::NoDebugInfo;
+
   if (SourceAction->getType() == types::TY_Asm ||
       SourceAction->getType() == types::TY_PP_Asm) {
-    bool WantDebug = false;
-    unsigned DwarfVersion = 0;
-    Args.ClaimAllArgs(options::OPT_g_Group);
-    if (Arg *A = Args.getLastArg(options::OPT_g_Group)) {
-      WantDebug = !A->getOption().matches(options::OPT_g0) &&
-        !A->getOption().matches(options::OPT_ggdb0);
-      if (WantDebug)
-        DwarfVersion = DwarfVersionNum(A->getSpelling());
-    }
-    if (DwarfVersion == 0)
-      DwarfVersion = getToolChain().GetDefaultDwarfVersion();
-    RenderDebugEnablingArgs(Args, CmdArgs,
-                            (WantDebug ? CodeGenOptions::LimitedDebugInfo
-                                       : CodeGenOptions::NoDebugInfo),
-                            DwarfVersion, llvm::DebuggerKind::Default);
-
+    // You might think that it would be ok to set DebugInfoKind outside of
+    // the guard for source type, however there is a test which asserts
+    // that some assembler invocation receives no -debug-info-kind,
+    // and it's not clear whether that test is just overly restrictive.
+    DebugInfoKind = (WantDebug ? codegenoptions::LimitedDebugInfo
+                               : codegenoptions::NoDebugInfo);
     // Add the -fdebug-compilation-dir flag if needed.
     addDebugCompDirArg(Args, CmdArgs);
 
@@ -6085,6 +6084,8 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
     // And pass along -I options
     Args.AddAllArgs(CmdArgs, options::OPT_I);
   }
+  RenderDebugEnablingArgs(Args, CmdArgs, DebugInfoKind, DwarfVersion,
+                          llvm::DebuggerKind::Default);
 
   // Handle -fPIC et al -- the relocation-model affects the assembler
   // for some targets.
@@ -7057,12 +7058,9 @@ void darwin::Linker::AddLinkArgs(Compilation &C, const ArgList &Args,
   const Driver &D = getToolChain().getDriver();
   const toolchains::MachO &MachOTC = getMachOToolChain();
 
-  unsigned Version[3] = {0, 0, 0};
+  unsigned Version[5] = {0, 0, 0, 0, 0};
   if (Arg *A = Args.getLastArg(options::OPT_mlinker_version_EQ)) {
-    bool HadExtra;
-    if (!Driver::GetReleaseVersion(A->getValue(), Version[0], Version[1],
-                                   Version[2], HadExtra) ||
-        HadExtra)
+    if (!Driver::GetReleaseVersion(A->getValue(), Version))
       D.Diag(diag::err_drv_invalid_version_number) << A->getAsString(Args);
   }
 

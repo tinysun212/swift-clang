@@ -36,6 +36,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Format.h"
+#include "llvm/Support/Locale.h"
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/raw_ostream.h"
 #include <limits>
@@ -931,7 +933,7 @@ bool Sema::CheckAArch64BuiltinFunctionCall(unsigned BuiltinID,
 
   if (BuiltinID == AArch64::BI__builtin_arm_rsr64 ||
       BuiltinID == AArch64::BI__builtin_arm_wsr64)
-    return SemaBuiltinARMSpecialReg(BuiltinID, TheCall, 0, 5, false);
+    return SemaBuiltinARMSpecialReg(BuiltinID, TheCall, 0, 5, true);
 
   if (BuiltinID == AArch64::BI__builtin_arm_rsr ||
       BuiltinID == AArch64::BI__builtin_arm_rsrp ||
@@ -2464,7 +2466,7 @@ bool Sema::SemaBuiltinVAStartImpl(CallExpr *TheCall) {
 
   if (!SecondArgIsLastNamedArgument)
     Diag(TheCall->getArg(1)->getLocStart(),
-         diag::warn_second_parameter_of_va_start_not_last_named_argument);
+         diag::warn_second_arg_of_va_start_not_last_named_param);
   else if (Type->isReferenceType()) {
     Diag(Arg->getLocStart(),
          diag::warn_va_start_of_reference_type_is_undefined);
@@ -3278,20 +3280,33 @@ bool Sema::CheckFormatArguments(ArrayRef<const Expr *> Args,
   // format is either NSString or CFString. This is a hack to prevent
   // diag when using the NSLocalizedString and CFCopyLocalizedString macros
   // which are usually used in place of NS and CF string literals.
-  if (Type == FST_NSString &&
-      SourceMgr.isInSystemMacro(Args[format_idx]->getLocStart()))
+  SourceLocation FormatLoc = Args[format_idx]->getLocStart();
+  if (Type == FST_NSString && SourceMgr.isInSystemMacro(FormatLoc))
     return false;
 
   // If there are no arguments specified, warn with -Wformat-security, otherwise
   // warn only with -Wformat-nonliteral.
-  if (Args.size() == firstDataArg)
-    Diag(Args[format_idx]->getLocStart(),
-         diag::warn_format_nonliteral_noargs)
+  if (Args.size() == firstDataArg) {
+    Diag(FormatLoc, diag::warn_format_nonliteral_noargs)
       << OrigFormatExpr->getSourceRange();
-  else
-    Diag(Args[format_idx]->getLocStart(),
-         diag::warn_format_nonliteral)
-           << OrigFormatExpr->getSourceRange();
+    switch (Type) {
+    default:
+      break;
+    case FST_Kprintf:
+    case FST_FreeBSDKPrintf:
+    case FST_Printf:
+      Diag(FormatLoc, diag::note_format_security_fixit)
+        << FixItHint::CreateInsertion(FormatLoc, "\"%s\", ");
+      break;
+    case FST_NSString:
+      Diag(FormatLoc, diag::note_format_security_fixit)
+        << FixItHint::CreateInsertion(FormatLoc, "@\"%@\", ");
+      break;
+    }
+  } else {
+    Diag(FormatLoc, diag::warn_format_nonliteral)
+      << OrigFormatExpr->getSourceRange();
+  }
   return false;
 }
 
@@ -3600,12 +3615,41 @@ CheckFormatHandler::HandleInvalidConversionSpecifier(unsigned argIndex,
     // gibberish when trying to match arguments.
     keepGoing = false;
   }
-  
-  EmitFormatDiagnostic(S.PDiag(diag::warn_format_invalid_conversion)
-                         << StringRef(csStart, csLen),
-                       Loc, /*IsStringLocation*/true,
-                       getSpecifierRange(startSpec, specifierLen));
-  
+
+  StringRef Specifier(csStart, csLen);
+
+  // If the specifier in non-printable, it could be the first byte of a UTF-8
+  // sequence. In that case, print the UTF-8 code point. If not, print the byte
+  // hex value.
+  std::string CodePointStr;
+  if (!llvm::sys::locale::isPrint(*csStart)) {
+    UTF32 CodePoint;
+    const UTF8 **B = reinterpret_cast<const UTF8 **>(&csStart);
+    const UTF8 *E =
+        reinterpret_cast<const UTF8 *>(csStart + csLen);
+    ConversionResult Result =
+        llvm::convertUTF8Sequence(B, E, &CodePoint, strictConversion);
+
+    if (Result != conversionOK) {
+      unsigned char FirstChar = *csStart;
+      CodePoint = (UTF32)FirstChar;
+    }
+
+    llvm::raw_string_ostream OS(CodePointStr);
+    if (CodePoint < 256)
+      OS << "\\x" << llvm::format("%02x", CodePoint);
+    else if (CodePoint <= 0xFFFF)
+      OS << "\\u" << llvm::format("%04x", CodePoint);
+    else
+      OS << "\\U" << llvm::format("%08x", CodePoint);
+    OS.flush();
+    Specifier = CodePointStr;
+  }
+
+  EmitFormatDiagnostic(
+      S.PDiag(diag::warn_format_invalid_conversion) << Specifier, Loc,
+      /*IsStringLocation*/ true, getSpecifierRange(startSpec, specifierLen));
+
   return keepGoing;
 }
 
@@ -5191,7 +5235,7 @@ static const CXXRecordDecl *getContainedDynamicClass(QualType T,
 
   const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
   RD = RD ? RD->getDefinition() : nullptr;
-  if (!RD)
+  if (!RD || RD->isInvalidDecl())
     return nullptr;
 
   if (RD->isDynamicClass())
@@ -7068,8 +7112,8 @@ static void DiagnoseNullConversion(Sema &S, Expr *E, QualType T,
   // __null is usually wrapped in a macro.  Go up a macro if that is the case.
   if (NullKind == Expr::NPCK_GNUNull) {
     if (Loc.isMacroID()) {
-      StringRef MacroName =
-          Lexer::getImmediateMacroName(Loc, S.SourceMgr, S.getLangOpts());
+      StringRef MacroName = Lexer::getImmediateMacroNameForDiagnostics(
+          Loc, S.SourceMgr, S.getLangOpts());
       if (MacroName == "NULL")
         Loc = S.SourceMgr.getImmediateExpansionRange(Loc).first;
     }
@@ -7852,12 +7896,20 @@ void Sema::CheckBoolLikeConversion(Expr *E, SourceLocation CC) {
 /// Diagnose when expression is an integer constant expression and its evaluation
 /// results in integer overflow
 void Sema::CheckForIntOverflow (Expr *E) {
-  if (isa<BinaryOperator>(E->IgnoreParenCasts()))
-    E->IgnoreParenCasts()->EvaluateForOverflow(Context);
-  else if (auto InitList = dyn_cast<InitListExpr>(E))
-    for (Expr *E : InitList->inits())
-      if (isa<BinaryOperator>(E->IgnoreParenCasts()))
-        E->IgnoreParenCasts()->EvaluateForOverflow(Context);
+  // Use a work list to deal with nested struct initializers.
+  SmallVector<Expr *, 2> Exprs(1, E);
+
+  do {
+    Expr *E = Exprs.pop_back_val();
+
+    if (isa<BinaryOperator>(E->IgnoreParenCasts())) {
+      E->IgnoreParenCasts()->EvaluateForOverflow(Context);
+      continue;
+    }
+
+    if (auto InitList = dyn_cast<InitListExpr>(E))
+      Exprs.append(InitList->inits().begin(), InitList->inits().end());
+  } while (!Exprs.empty());
 }
 
 namespace {

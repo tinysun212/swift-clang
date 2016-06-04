@@ -434,7 +434,24 @@ struct CounterCoverageMappingBuilder
     Visit(S);
     Counter ExitCount = getRegion().getCounter();
     popRegions(Index);
+
+    // The statement may be spanned by an expansion. Make sure we handle a file
+    // exit out of this expansion before moving to the next statement.
+    if (SM.isBeforeInTranslationUnit(getStart(S), S->getLocStart()))
+      MostRecentLocation = getEnd(S);
+
     return ExitCount;
+  }
+
+  /// \brief Check whether a region with bounds \c StartLoc and \c EndLoc
+  /// is already added to \c SourceRegions.
+  bool isRegionAlreadyAdded(SourceLocation StartLoc, SourceLocation EndLoc) {
+    return SourceRegions.rend() !=
+           std::find_if(SourceRegions.rbegin(), SourceRegions.rend(),
+                        [&](const SourceMappingRegion &Region) {
+                          return Region.getStartLoc() == StartLoc &&
+                                 Region.getEndLoc() == EndLoc;
+                        });
   }
 
   /// \brief Adjust the most recently visited location to \c EndLoc.
@@ -442,10 +459,15 @@ struct CounterCoverageMappingBuilder
   /// This should be used after visiting any statements in non-source order.
   void adjustForOutOfOrderTraversal(SourceLocation EndLoc) {
     MostRecentLocation = EndLoc;
-    // Avoid adding duplicate regions if we have a completed region on the top
-    // of the stack and are adjusting to the end of a virtual file.
+    // The code region for a whole macro is created in handleFileExit() when
+    // it detects exiting of the virtual file of that macro. If we visited
+    // statements in non-source order, we might already have such a region
+    // added, for example, if a body of a loop is divided among multiple
+    // macros. Avoid adding duplicate regions in such case.
     if (getRegion().hasEndLoc() &&
-        MostRecentLocation == getEndOfFileOrMacro(MostRecentLocation))
+        MostRecentLocation == getEndOfFileOrMacro(MostRecentLocation) &&
+        isRegionAlreadyAdded(getStartOfFileOrMacro(MostRecentLocation),
+                             MostRecentLocation))
       MostRecentLocation = getIncludeOrExpansionLoc(MostRecentLocation);
   }
 
@@ -770,7 +792,7 @@ struct CounterCoverageMappingBuilder
           BreakContinueStack.back().ContinueCount, BC.ContinueCount);
 
     Counter ExitCount = getRegionCounter(S);
-    pushRegion(ExitCount);
+    pushRegion(ExitCount, getStart(S), getEnd(S));
   }
 
   void VisitSwitchCase(const SwitchCase *S) {
@@ -1038,7 +1060,7 @@ void CoverageMappingModuleGen::emit() {
     // to pass the list of names referenced to codegen.
     new llvm::GlobalVariable(CGM.getModule(), NamesArrTy, true,
                              llvm::GlobalValue::InternalLinkage, NamesArrVal,
-                             llvm::getCoverageNamesVarName());
+                             llvm::getCoverageUnusedNamesVarName());
   }
 }
 

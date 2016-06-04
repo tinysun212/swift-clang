@@ -2624,29 +2624,28 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
   if (!Method) {
     // Handle messages to id and __kindof types (where we use the
     // global method pool).
-    // FIXME: The type bound is currently ignored by lookup in the
-    // global pool.
     const ObjCObjectType *typeBound = nullptr;
     bool receiverIsIdLike = ReceiverType->isObjCIdOrObjectKindOfType(Context,
                                                                      typeBound);
     if (receiverIsIdLike || ReceiverType->isBlockPointerType() ||
         (Receiver && Context.isObjCNSObjectType(Receiver->getType()))) {
-      Method = LookupInstanceMethodInGlobalPool(Sel, 
-                                                SourceRange(LBracLoc, RBracLoc),
-                                                receiverIsIdLike);
-      if (!Method)
-        Method = LookupFactoryMethodInGlobalPool(Sel, 
-                                                 SourceRange(LBracLoc,RBracLoc),
-                                                 receiverIsIdLike);
-      if (Method) {
+      SmallVector<ObjCMethodDecl*, 4> Methods;
+      // If we have a type bound, further filter the methods.
+      CollectMultipleMethodsInGlobalPool(Sel, Methods, true/*InstanceFirst*/,
+                                         true/*CheckTheOther*/, typeBound);
+      if (!Methods.empty()) {
+        // We chose the first method as the initial condidate, then try to
+        // select a better one.
+        Method = Methods[0];
+
         if (ObjCMethodDecl *BestMethod =
-              SelectBestMethod(Sel, ArgsIn, Method->isInstanceMethod()))
+            SelectBestMethod(Sel, ArgsIn, Method->isInstanceMethod(), Methods))
           Method = BestMethod;
+
         if (!AreMultipleMethodsInGlobalPool(Sel, Method,
                                             SourceRange(LBracLoc, RBracLoc),
-                                            receiverIsIdLike)) {
-          DiagnoseUseOfDecl(Method, SelLoc);
-        }
+                                            receiverIsIdLike, Methods))
+           DiagnoseUseOfDecl(Method, SelLoc);
       }
     } else if (ReceiverType->isObjCClassOrClassKindOfType() ||
                ReceiverType->isObjCQualifiedClassType()) {
@@ -2684,25 +2683,32 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
         if (!Method) {
           // If not messaging 'self', look for any factory method named 'Sel'.
           if (!Receiver || !isSelfExpr(Receiver)) {
-            Method = LookupFactoryMethodInGlobalPool(Sel, 
-                                                SourceRange(LBracLoc, RBracLoc));
-            if (!Method) {
-              // If no class (factory) method was found, check if an _instance_
-              // method of the same name exists in the root class only.
-              Method = LookupInstanceMethodInGlobalPool(Sel,
-                                               SourceRange(LBracLoc, RBracLoc));
-              if (Method)
-                  if (const ObjCInterfaceDecl *ID =
-                      dyn_cast<ObjCInterfaceDecl>(Method->getDeclContext())) {
-                    if (ID->getSuperClass())
-                      Diag(SelLoc, diag::warn_root_inst_method_not_found)
-                      << Sel << SourceRange(LBracLoc, RBracLoc);
-                  }
+            // If no class (factory) method was found, check if an _instance_
+            // method of the same name exists in the root class only.
+            SmallVector<ObjCMethodDecl*, 4> Methods;
+            CollectMultipleMethodsInGlobalPool(Sel, Methods,
+                                               false/*InstanceFirst*/,
+                                               true/*CheckTheOther*/);
+            if (!Methods.empty()) {
+              // We chose the first method as the initial condidate, then try
+              // to select a better one.
+              Method = Methods[0];
+
+              // If we find an instance method, emit waring.
+              if (Method->isInstanceMethod()) {
+                if (const ObjCInterfaceDecl *ID =
+                    dyn_cast<ObjCInterfaceDecl>(Method->getDeclContext())) {
+                  if (ID->getSuperClass())
+                    Diag(SelLoc, diag::warn_root_inst_method_not_found)
+                        << Sel << SourceRange(LBracLoc, RBracLoc);
+                }
+              }
+
+             if (ObjCMethodDecl *BestMethod =
+                 SelectBestMethod(Sel, ArgsIn, Method->isInstanceMethod(),
+                                  Methods))
+               Method = BestMethod;
             }
-            if (Method)
-              if (ObjCMethodDecl *BestMethod =
-                  SelectBestMethod(Sel, ArgsIn, Method->isInstanceMethod()))
-                Method = BestMethod;
           }
         }
       }
@@ -2767,15 +2773,24 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
             // behavior isn't very desirable, however we need it for GCC
             // compatibility. FIXME: should we deviate??
             if (OCIType->qual_empty()) {
-              Method = LookupInstanceMethodInGlobalPool(Sel,
-                                              SourceRange(LBracLoc, RBracLoc));
-              if (Method) {
-                if (auto BestMethod =
-                      SelectBestMethod(Sel, ArgsIn, Method->isInstanceMethod()))
+              SmallVector<ObjCMethodDecl*, 4> Methods;
+              CollectMultipleMethodsInGlobalPool(Sel, Methods,
+                                                 true/*InstanceFirst*/,
+                                                 false/*CheckTheOther*/);
+              if (!Methods.empty()) {
+                // We chose the first method as the initial condidate, then try
+                // to select a better one.
+                Method = Methods[0];
+
+                if (ObjCMethodDecl *BestMethod =
+                    SelectBestMethod(Sel, ArgsIn, Method->isInstanceMethod(),
+                                     Methods))
                   Method = BestMethod;
+
                 AreMultipleMethodsInGlobalPool(Sel, Method,
                                                SourceRange(LBracLoc, RBracLoc),
-                                               true);
+                                               true/*receiverIdOrClass*/,
+                                               Methods);
               }
               if (Method && !forwardClass)
                 Diag(SelLoc, diag::warn_maynot_respond)
@@ -3478,6 +3493,8 @@ diagnoseObjCARCConversion(Sema &S, SourceRange castRange,
     return;
 
   QualType castExprType = castExpr->getType();
+  // Defer emitting a diagnostic for bridge-related casts; that will be
+  // handled by CheckObjCBridgeRelatedConversions.
   TypedefNameDecl *TDNDecl = nullptr;
   if ((castACTC == ACTC_coreFoundation &&  exprACTC == ACTC_retainable &&
        ObjCBridgeRelatedAttrFromType(castType, TDNDecl)) ||
@@ -3922,16 +3939,16 @@ Sema::CheckObjCBridgeRelatedConversions(SourceLocation Loc,
           << FixItHint::CreateInsertion(SrcExprEndLoc, "]");
         Diag(RelatedClass->getLocStart(), diag::note_declared_at);
         Diag(TDNDecl->getLocStart(), diag::note_declared_at);
-      }
       
-      QualType receiverType = Context.getObjCInterfaceType(RelatedClass);
-      // Argument.
-      Expr *args[] = { SrcExpr };
-      ExprResult msg = BuildClassMessageImplicit(receiverType, false,
+        QualType receiverType = Context.getObjCInterfaceType(RelatedClass);
+        // Argument.
+        Expr *args[] = { SrcExpr };
+        ExprResult msg = BuildClassMessageImplicit(receiverType, false,
                                       ClassMethod->getLocation(),
                                       ClassMethod->getSelector(), ClassMethod,
                                       MultiExprArg(args, 1));
-      SrcExpr = msg.get();
+        SrcExpr = msg.get();
+      }
       return true;
     }
   }
@@ -3965,14 +3982,14 @@ Sema::CheckObjCBridgeRelatedConversions(SourceLocation Loc,
         }
         Diag(RelatedClass->getLocStart(), diag::note_declared_at);
         Diag(TDNDecl->getLocStart(), diag::note_declared_at);
-      }
       
-      ExprResult msg =
-        BuildInstanceMessageImplicit(SrcExpr, SrcType,
-                                     InstanceMethod->getLocation(),
-                                     InstanceMethod->getSelector(),
-                                     InstanceMethod, None);
-      SrcExpr = msg.get();
+        ExprResult msg =
+          BuildInstanceMessageImplicit(SrcExpr, SrcType,
+                                       InstanceMethod->getLocation(),
+                                       InstanceMethod->getSelector(),
+                                       InstanceMethod, None);
+        SrcExpr = msg.get();
+      }
       return true;
     }
   }
@@ -3996,9 +4013,9 @@ Sema::CheckObjCARCConversion(SourceRange castRange, QualType castType,
   ARCConversionTypeClass exprACTC = classifyTypeForARCConversion(castExprType);
   ARCConversionTypeClass castACTC = classifyTypeForARCConversion(effCastType);
   if (exprACTC == castACTC) {
-    // check for viablity and report error if casting an rvalue to a
+    // Check for viability and report error if casting an rvalue to a
     // life-time qualifier.
-    if (Diagnose && castACTC == ACTC_retainable &&
+    if (castACTC == ACTC_retainable &&
         (CCK == CCK_CStyleCast || CCK == CCK_OtherCast) &&
         castType != castExprType) {
       const Type *DT = castType.getTypePtr();
@@ -4014,10 +4031,12 @@ Sema::CheckObjCARCConversion(SourceRange castRange, QualType castType,
         QDT = AT->desugar();
       if (QDT != castType &&
           QDT.getObjCLifetime() !=  Qualifiers::OCL_None) {
-        SourceLocation loc =
-          (castRange.isValid() ? castRange.getBegin() 
-                              : castExpr->getExprLoc());
-        Diag(loc, diag::err_arc_nolifetime_behavior);
+        if (Diagnose) {
+          SourceLocation loc = (castRange.isValid() ? castRange.getBegin() 
+                                                    : castExpr->getExprLoc());
+          Diag(loc, diag::err_arc_nolifetime_behavior);
+        }
+        return ACR_error;
       }
     }
     return ACR_okay;
@@ -4065,24 +4084,26 @@ Sema::CheckObjCARCConversion(SourceRange castRange, QualType castType,
       CCK != CCK_ImplicitConversion)
     return ACR_unbridged;
 
-  // Do not issue bridge cast" diagnostic when implicit casting a cstring
-  // to 'NSString *'. Let caller issue a normal mismatched diagnostic with
-  // suitable fix-it.
+  // Issue a diagnostic about a missing @-sign when implicit casting a cstring
+  // to 'NSString *', instead of falling through to report a "bridge cast"
+  // diagnostic.
   if (castACTC == ACTC_retainable && exprACTC == ACTC_none &&
       ConversionToObjCStringLiteralCheck(castType, castExpr, Diagnose))
-    return ACR_okay;
+    return ACR_error;
   
   // Do not issue "bridge cast" diagnostic when implicit casting
   // a retainable object to a CF type parameter belonging to an audited
   // CF API function. Let caller issue a normal type mismatched diagnostic
   // instead.
-  if (Diagnose &&
-      (!DiagnoseCFAudited || exprACTC != ACTC_retainable ||
-        castACTC != ACTC_coreFoundation))
-    if (!(exprACTC == ACTC_voidPtr && castACTC == ACTC_retainable &&
-          (Opc == BO_NE || Opc == BO_EQ)))
+  if ((!DiagnoseCFAudited || exprACTC != ACTC_retainable ||
+       castACTC != ACTC_coreFoundation) &&
+      !(exprACTC == ACTC_voidPtr && castACTC == ACTC_retainable &&
+        (Opc == BO_NE || Opc == BO_EQ))) {
+    if (Diagnose)
       diagnoseObjCARCConversion(*this, castRange, castType, castACTC, castExpr,
                                 castExpr, exprACTC, CCK);
+    return ACR_error;
+  }
   return ACR_okay;
 }
 

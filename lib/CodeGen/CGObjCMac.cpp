@@ -2956,6 +2956,15 @@ llvm::Constant *CGObjCCommonMac::EmitPropertyList(Twine Name,
                                        const ObjCContainerDecl *OCD,
                                        const ObjCCommonTypesHelper &ObjCTypes,
                                        bool IsClassProperty) {
+  if (IsClassProperty) {
+    // Make this entry NULL for OS X with deployment target < 10.11, for iOS
+    // with deployment target < 9.0.
+    const llvm::Triple &Triple = CGM.getTarget().getTriple();
+    if ((Triple.isMacOSX() && Triple.isMacOSXVersionLT(10, 11)) ||
+        (Triple.isiOS() && Triple.isOSVersionLT(9)))
+      return llvm::Constant::getNullValue(ObjCTypes.PropertyListPtrTy);
+  }
+
   SmallVector<llvm::Constant *, 16> Properties;
   llvm::SmallPtrSet<const IdentifierInfo*, 16> PropertySet;
 
@@ -3481,8 +3490,10 @@ CGObjCMac::EmitClassExtension(const ObjCImplementationDecl *ID,
 
   llvm::Constant *Values[3];
   Values[0] = llvm::ConstantInt::get(ObjCTypes.IntTy, Size);
-  Values[1] = nullptr;
-  if (!isClassProperty)
+  if (isClassProperty) {
+    llvm::Type *PtrTy = CGM.Int8PtrTy;
+    Values[1] = llvm::Constant::getNullValue(PtrTy);
+  } else
     Values[1] = BuildWeakIvarLayout(ID, CharUnits::Zero(), InstanceSize,
                                     hasMRCWeakIvars);
   if (isClassProperty)
@@ -5623,6 +5634,7 @@ ObjCNonFragileABITypesHelper::ObjCNonFragileABITypesHelper(CodeGen::CodeGenModul
   //   const struct _protocol_list_t * const protocols;
   //   const struct _prop_list_t * const properties;
   //   const struct _prop_list_t * const class_properties;
+  //   const uint32_t size;
   // }
   CategorynfABITy = llvm::StructType::create("struct._category_t",
                                              Int8PtrTy, ClassnfABIPtrTy,
@@ -5631,6 +5643,7 @@ ObjCNonFragileABITypesHelper::ObjCNonFragileABITypesHelper(CodeGen::CodeGenModul
                                              ProtocolListnfABIPtrTy,
                                              PropertyListPtrTy,
                                              PropertyListPtrTy,
+                                             IntTy,
                                              nullptr);
 
   // New types for nonfragile abi messaging.
@@ -6192,6 +6205,7 @@ llvm::Value *CGObjCNonFragileABIMac::GenerateProtocolRef(CodeGenFunction &CGF,
 ///   const struct _protocol_list_t * const protocols;
 ///   const struct _prop_list_t * const properties;
 ///   const struct _prop_list_t * const class_properties;
+///   const uint32_t size;
 /// }
 ///
 void CGObjCNonFragileABIMac::GenerateCategory(const ObjCCategoryImplDecl *OCD) {
@@ -6206,7 +6220,7 @@ void CGObjCNonFragileABIMac::GenerateCategory(const ObjCCategoryImplDecl *OCD) {
   llvm::SmallString<64> ExtClassName(getClassSymbolPrefix());
   ExtClassName += Interface->getObjCRuntimeNameAsString();
 
-  llvm::Constant *Values[7];
+  llvm::Constant *Values[8];
   Values[0] = GetClassName(OCD->getIdentifier()->getName());
   // meta-class entry symbol
   llvm::Constant *ClassGV = GetClassGlobal(ExtClassName.str(),
@@ -6264,6 +6278,9 @@ void CGObjCNonFragileABIMac::GenerateCategory(const ObjCCategoryImplDecl *OCD) {
     Values[5] = llvm::Constant::getNullValue(ObjCTypes.PropertyListPtrTy);
     Values[6] = llvm::Constant::getNullValue(ObjCTypes.PropertyListPtrTy);
   }
+
+  unsigned Size = CGM.getDataLayout().getTypeAllocSize(ObjCTypes.CategorynfABITy);
+  Values[7] = llvm::ConstantInt::get(ObjCTypes.IntTy, Size);
 
   llvm::Constant *Init =
     llvm::ConstantStruct::get(ObjCTypes.CategorynfABITy,
@@ -6464,7 +6481,7 @@ llvm::Constant *CGObjCNonFragileABIMac::GetOrEmitProtocolRef(
   const ObjCProtocolDecl *PD) {
   llvm::GlobalVariable *&Entry = Protocols[PD->getIdentifier()];
 
-  if (!Entry) {
+  if (!Entry)
     // We use the initializer as a marker of whether this is a forward
     // reference or not. At module finalization we add the empty
     // contents for protocols which were referenced but never defined.
@@ -6473,8 +6490,6 @@ llvm::Constant *CGObjCNonFragileABIMac::GetOrEmitProtocolRef(
                                  false, llvm::GlobalValue::ExternalLinkage,
                                  nullptr,
                                  "\01l_OBJC_PROTOCOL_$_" + PD->getObjCRuntimeNameAsString());
-    Entry->setSection("__DATA,__datacoal_nt,coalesced");
-  }
 
   return Entry;
 }
@@ -6601,7 +6616,6 @@ llvm::Constant *CGObjCNonFragileABIMac::GetOrEmitProtocol(
                                "\01l_OBJC_PROTOCOL_$_" + PD->getObjCRuntimeNameAsString());
     Entry->setAlignment(
       CGM.getDataLayout().getABITypeAlignment(ObjCTypes.ProtocolnfABITy));
-    Entry->setSection("__DATA,__datacoal_nt,coalesced");
 
     Protocols[PD->getIdentifier()] = Entry;
   }
@@ -6749,7 +6763,7 @@ static void appendSelectorForMessageRefTable(std::string &buffer,
   }
 }
 
-/// Emit a "v-table" message send.  We emit a weak hidden-visibility
+/// Emit a "vtable" message send.  We emit a weak hidden-visibility
 /// struct, initially containing the selector pointer and a pointer to
 /// a "fixup" variant of the appropriate objc_msgSend.  To call, we
 /// load and call the function pointer, passing the address of the
@@ -7349,8 +7363,6 @@ CGObjCNonFragileABIMac::GetInterfaceEHType(const ObjCInterfaceDecl *ID,
 
   if (ForDefinition)
     Entry->setSection("__DATA,__objc_const");
-  else
-    Entry->setSection("__DATA,__datacoal_nt,coalesced");
 
   return Entry;
 }

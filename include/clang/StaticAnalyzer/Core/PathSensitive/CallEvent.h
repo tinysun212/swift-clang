@@ -68,6 +68,9 @@ public:
   /// name regardless the number of arguments.
   CallDescription(StringRef FuncName, unsigned RequiredArgs = NoArgRequirement)
       : II(nullptr), FuncName(FuncName), RequiredArgs(RequiredArgs) {}
+
+  /// \brief Get the name of the function that this object matches.
+  StringRef getFunctionName() const { return FuncName; }
 };
 
 template<typename T = CallEvent>
@@ -956,6 +959,11 @@ public:
     }
     llvm_unreachable("Unknown message kind");
   }
+
+  // Returns the property accessed by this method, either explicitly via
+  // property syntax or implicitly via a getter or setter method. Returns
+  // nullptr if the call is not a prooperty access.
+  const ObjCPropertyDecl *getAccessedProperty() const;
 
   RuntimeDefinition getRuntimeDefinition() const override;
 

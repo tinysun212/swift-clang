@@ -435,7 +435,7 @@ checkAvailability(ASTContext &Context, const AvailabilityAttr *A,
           << VTI << HintMessage;
     }
 
-    return AR_NotYetIntroduced;
+    return A->getStrict() ? AR_Unavailable : AR_NotYetIntroduced;
   }
 
   // Make sure that this declaration hasn't been obsoleted.
@@ -471,6 +471,9 @@ checkAvailability(ASTContext &Context, const AvailabilityAttr *A,
 
 AvailabilityResult Decl::getAvailability(std::string *Message,
                                          Optional<VersionTuple> Version) const {
+  if (auto *FTD = dyn_cast<FunctionTemplateDecl>(this))
+    return FTD->getTemplatedDecl()->getAvailability(Message, Version);
+
   AvailabilityResult Result = AR_Available;
   std::string ResultMessage;
 
@@ -1553,9 +1556,12 @@ void DeclContext::makeDeclVisibleInContextWithFlags(NamedDecl *D, bool Internal,
                                                     bool Recoverable) {
   assert(this == getPrimaryContext() && "expected a primary DC");
 
-  // Skip declarations within functions.
-  if (isFunctionOrMethod())
+  if (!isLookupContext()) {
+    if (isTransparentContext())
+      getParent()->getPrimaryContext()
+        ->makeDeclVisibleInContextWithFlags(D, Internal, Recoverable);
     return;
+  }
 
   // Skip declarations which should be invisible to name lookup.
   if (shouldBeHidden(D))

@@ -941,7 +941,7 @@ public:
 
   /// UndefinedInternals - all the used, undefined objects which require a
   /// definition in this translation unit.
-  llvm::DenseMap<NamedDecl *, SourceLocation> UndefinedButUsed;
+  llvm::MapVector<NamedDecl *, SourceLocation> UndefinedButUsed;
 
   /// Obtain a sorted list of functions that are undefined but ODR-used.
   void getUndefinedButUsed(
@@ -986,6 +986,7 @@ public:
   llvm::SmallSet<SpecialMemberDecl, 4> SpecialMembersBeingDeclared;
 
   void ReadMethodPool(Selector Sel);
+  void updateOutOfDateSelector(Selector Sel);
 
   /// Private Helper predicate to check for 'self'.
   bool isSelfExpr(Expr *RExpr);
@@ -1366,6 +1367,24 @@ public:
       DB << T;
     }
   };
+
+  /// Do a check to make sure \p Name looks like a legal swift_name
+  /// attribute for the decl \p D. Raise a diagnostic if the name is invalid
+  /// for the given declaration.
+  ///
+  /// For a function, this will validate a compound Swift name,
+  /// e.g. <code>init(foo:bar:baz:)</code> or <code>controllerForName(_:)</code>,
+  /// and the function will output the number of parameter names, and whether
+  /// this is a single-arg initializer.
+  ///
+  /// For a type, enum constant, property, or variable declaration, this will
+  /// validate either a simple identifier, or a qualified
+  /// <code>context.identifier</code> name.
+  ///
+  /// \returns true if the name is a valid swift name for \p D, false otherwise.
+  bool DiagnoseSwiftName(Decl *D, StringRef Name,
+                         SourceLocation ArgLoc,
+                         IdentifierInfo *AttrName);
 
 private:
   bool RequireCompleteTypeImpl(SourceLocation Loc, QualType T,
@@ -2105,11 +2124,13 @@ public:
   /// Attribute merging methods. Return true if a new attribute was added.
   AvailabilityAttr *mergeAvailabilityAttr(NamedDecl *D, SourceRange Range,
                                           IdentifierInfo *Platform,
+                                          bool Implicit,
                                           VersionTuple Introduced,
                                           VersionTuple Deprecated,
                                           VersionTuple Obsoleted,
                                           bool IsUnavailable,
                                           StringRef Message,
+                                          bool IsStrict, StringRef Replacement,
                                           AvailabilityMergeKind AMK,
                                           unsigned AttrSpellingListIndex);
   TypeVisibilityAttr *mergeTypeVisibilityAttr(Decl *D, SourceRange Range,
@@ -2387,8 +2408,8 @@ public:
 
   // Members have to be NamespaceDecl* or TranslationUnitDecl*.
   // TODO: make this is a typesafe union.
-  typedef llvm::SmallPtrSet<DeclContext   *, 16> AssociatedNamespaceSet;
-  typedef llvm::SmallPtrSet<CXXRecordDecl *, 16> AssociatedClassSet;
+  typedef llvm::SmallSetVector<DeclContext   *, 16> AssociatedNamespaceSet;
+  typedef llvm::SmallSetVector<CXXRecordDecl *, 16> AssociatedClassSet;
 
   void AddOverloadCandidate(FunctionDecl *Function,
                             DeclAccessPair FoundDecl,
@@ -2507,6 +2528,10 @@ public:
                                      bool Complain,
                                      DeclAccessPair &Found,
                                      bool *pHadMultipleCandidates = nullptr);
+
+  FunctionDecl *
+  resolveAddressOfOnlyViableOverloadCandidate(Expr *E,
+                                              DeclAccessPair &FoundResult);
 
   FunctionDecl *
   ResolveSingleFunctionTemplateSpecialization(OverloadExpr *ovl,
@@ -3156,25 +3181,32 @@ private:
 
 public:
   /// \brief - Returns instance or factory methods in global method pool for
-  /// given selector. If no such method or only one method found, function returns
-  /// false; otherwise, it returns true
-  bool CollectMultipleMethodsInGlobalPool(Selector Sel,
-                                          SmallVectorImpl<ObjCMethodDecl*>& Methods,
-                                          bool instance);
+  /// given selector. It checks the desired kind first, if none is found, and
+  /// parameter checkTheOther is set, it then checks the other kind. If no such
+  /// method or only one method is found, function returns false; otherwise, it
+  /// returns true.
+  bool
+  CollectMultipleMethodsInGlobalPool(Selector Sel,
+                                     SmallVectorImpl<ObjCMethodDecl*>& Methods,
+                                     bool InstanceFirst, bool CheckTheOther,
+                                     const ObjCObjectType *TypeBound = nullptr);
     
-  bool AreMultipleMethodsInGlobalPool(Selector Sel, ObjCMethodDecl *BestMethod,
-                                      SourceRange R,
-                                      bool receiverIdOrClass);
+  bool
+  AreMultipleMethodsInGlobalPool(Selector Sel, ObjCMethodDecl *BestMethod,
+                                 SourceRange R, bool receiverIdOrClass,
+                                 SmallVectorImpl<ObjCMethodDecl*>& Methods);
       
-  void DiagnoseMultipleMethodInGlobalPool(SmallVectorImpl<ObjCMethodDecl*> &Methods,
-                                          Selector Sel, SourceRange R,
-                                          bool receiverIdOrClass);
+  void
+  DiagnoseMultipleMethodInGlobalPool(SmallVectorImpl<ObjCMethodDecl*> &Methods,
+                                     Selector Sel, SourceRange R,
+                                     bool receiverIdOrClass);
 
 private:
   /// \brief - Returns a selector which best matches given argument list or
   /// nullptr if none could be found
   ObjCMethodDecl *SelectBestMethod(Selector Sel, MultiExprArg Args,
-                                   bool IsInstance);
+                                   bool IsInstance,
+                                   SmallVectorImpl<ObjCMethodDecl*>& Methods);
     
 
   /// \brief Record the typo correction failure and return an empty correction.
@@ -3562,7 +3594,7 @@ public:
   //===--------------------------------------------------------------------===//
   // Expression Parsing Callbacks: SemaExpr.cpp.
 
-  bool CanUseDecl(NamedDecl *D);
+  bool CanUseDecl(NamedDecl *D, bool TreatUnavailableAsInvalid);
   bool DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
                          const ObjCInterfaceDecl *UnknownObjCClass=nullptr,
                          bool ObjCPropertyAccess=false);
@@ -3596,9 +3628,15 @@ public:
   // for expressions referring to a decl; these exist because odr-use marking
   // needs to be delayed for some constant variables when we build one of the
   // named expressions.
-  void MarkAnyDeclReferenced(SourceLocation Loc, Decl *D, bool OdrUse);
+  //
+  // MightBeOdrUse indicates whether the use could possibly be an odr-use, and
+  // should usually be true. This only needs to be set to false if the lack of
+  // odr-use cannot be determined from the current context (for instance,
+  // because the name denotes a virtual function and was written without an
+  // explicit nested-name-specifier).
+  void MarkAnyDeclReferenced(SourceLocation Loc, Decl *D, bool MightBeOdrUse);
   void MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
-                              bool OdrUse = true);
+                              bool MightBeOdrUse = true);
   void MarkVariableReferenced(SourceLocation Loc, VarDecl *Var);
   void MarkDeclRefReferenced(DeclRefExpr *E);
   void MarkMemberReferenced(MemberExpr *E);
@@ -7298,6 +7336,12 @@ public:
                                ArrayRef<IdentifierLocPair> ProtocolId,
                                SmallVectorImpl<Decl *> &Protocols);
 
+  void DiagnoseTypeArgsAndProtocols(IdentifierInfo *ProtocolId,
+                                    SourceLocation ProtocolLoc,
+                                    IdentifierInfo *TypeArgId,
+                                    SourceLocation TypeArgLoc,
+                                    bool SelectProtocolFirst = false);
+
   /// Given a list of identifiers (and their locations), resolve the
   /// names to either Objective-C protocol qualifiers or type
   /// arguments, as appropriate.
@@ -8672,7 +8716,7 @@ public:
                                         Expr *CastExpr,
                                         SourceLocation RParenLoc);
 
-  enum ARCConversionResult { ACR_okay, ACR_unbridged };
+  enum ARCConversionResult { ACR_okay, ACR_unbridged, ACR_error };
 
   /// \brief Checks for invalid conversions and casts between
   /// retainable pointers and other pointer kinds.

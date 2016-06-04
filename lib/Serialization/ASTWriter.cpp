@@ -4359,6 +4359,19 @@ uint64_t ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
     }
   }
 
+  // For method pool in the module, if it contains an entry for a selector,
+  // the entry should be complete, containing everything introduced by that
+  // module and all modules it imports. It's possible that the entry is out of
+  // date, so we need to pull in the new content here.
+
+  // It's possible that updateOutOfDateSelector can update SelectorIDs. To be
+  // safe, we copy all selectors out.
+  llvm::SmallVector<Selector, 256> AllSelectors;
+  for (auto &SelectorAndID : SelectorIDs)
+    AllSelectors.push_back(SelectorAndID.first);
+  for (auto &Selector : AllSelectors)
+    SemaRef.updateOutOfDateSelector(Selector);
+
   // Form the record of special types.
   RecordData SpecialTypes;
   AddTypeRef(Context.getRawCFConstantStringType(), SpecialTypes);
@@ -5703,8 +5716,19 @@ static bool isImportedDeclContext(ASTReader *Chain, const Decl *D) {
 }
 
 void ASTWriter::AddedVisibleDecl(const DeclContext *DC, const Decl *D) {
-  // TU and namespaces are handled elsewhere.
-  if (isa<TranslationUnitDecl>(DC) || isa<NamespaceDecl>(DC))
+   assert(DC->isLookupContext() &&
+          "Should not add lookup results to non-lookup contexts!");
+
+  // TU is handled elsewhere.
+  if (isa<TranslationUnitDecl>(DC))
+    return;
+
+  // Namespaces are handled elsewhere, except for template instantiations of
+  // FunctionTemplateDecls in namespaces. We are interested in cases where the
+  // local instantiations are added to an imported context. Only happens when
+  // adding ADL lookup candidates, for example templated friends.
+  if (isa<NamespaceDecl>(DC) && D->getFriendObjectKind() == Decl::FOK_None &&
+      !isa<FunctionTemplateDecl>(D))
     return;
 
   // We're only interested in cases where a local declaration is added to an

@@ -2118,6 +2118,8 @@ Decl *TemplateDeclInstantiator::VisitNonTypeTemplateParmDecl(
     Param->setInvalidDecl();
 
   if (D->hasDefaultArgument() && !D->defaultArgumentWasInherited()) {
+    EnterExpressionEvaluationContext ConstantEvaluated(SemaRef,
+                                                       Sema::ConstantEvaluated);
     ExprResult Value = SemaRef.SubstExpr(D->getDefaultArgument(), TemplateArgs);
     if (!Value.isInvalid())
       Param->setDefaultArgument(Value.get());
@@ -3728,9 +3730,14 @@ void Sema::InstantiateVariableInitializer(
       PushExpressionEvaluationContext(Sema::PotentiallyEvaluated, OldVar);
 
     // Instantiate the initializer.
-    ExprResult Init =
-        SubstInitializer(OldVar->getInit(), TemplateArgs,
-                         OldVar->getInitStyle() == VarDecl::CallInit);
+    ExprResult Init;
+
+    {
+      ContextRAII SwitchContext(*this, Var->getDeclContext());
+      Init = SubstInitializer(OldVar->getInit(), TemplateArgs,
+                              OldVar->getInitStyle() == VarDecl::CallInit);
+    }
+
     if (!Init.isInvalid()) {
       bool TypeMayContainAuto = true;
       Expr *InitExpr = Init.get();

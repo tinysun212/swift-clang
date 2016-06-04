@@ -23,7 +23,6 @@
 #include "clang/AST/DeclVisitor.h"
 #include "clang/AST/Expr.h"
 #include "clang/Sema/IdentifierResolver.h"
-#include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/Support/SaveAndRestore.h"
 
@@ -2728,9 +2727,9 @@ ASTDeclReader::FindExistingResult::~FindExistingResult() {
   if (needsAnonymousDeclarationNumber(New)) {
     setAnonymousDeclForMerging(Reader, New->getLexicalDeclContext(),
                                AnonymousDeclNumber, New);
-  } else if (DC->isTranslationUnit() && Reader.SemaObj &&
+  } else if (DC->isTranslationUnit() &&
              !Reader.getContext().getLangOpts().CPlusPlus) {
-    if (Reader.SemaObj->IdResolver.tryAddTopLevelDecl(New, Name))
+    if (Reader.getIdResolver().tryAddTopLevelDecl(New, Name))
       Reader.PendingFakeLookupResults[Name.getAsIdentifierInfo()]
             .push_back(New);
   } else if (DeclContext *MergeDC = getPrimaryContextForMerging(Reader, DC)) {
@@ -2833,9 +2832,9 @@ ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
       if (isSameEntity(Existing, D))
         return FindExistingResult(Reader, D, Existing, AnonymousDeclNumber,
                                   TypedefNameForLinkage);
-  } else if (DC->isTranslationUnit() && Reader.SemaObj &&
+  } else if (DC->isTranslationUnit() &&
              !Reader.getContext().getLangOpts().CPlusPlus) {
-    IdentifierResolver &IdResolver = Reader.SemaObj->IdResolver;
+    IdentifierResolver &IdResolver = Reader.getIdResolver();
 
     // Temporarily consider the identifier to be up-to-date. We don't want to
     // cause additional lookups here.
@@ -3000,6 +2999,8 @@ static void inheritDefaultTemplateArguments(ASTContext &Context,
 
   for (unsigned I = 0, N = FromTP->size(); I != N; ++I) {
     NamedDecl *FromParam = FromTP->getParam(N - I - 1);
+    if (FromParam->isParameterPack())
+      continue;
     NamedDecl *ToParam = ToTP->getParam(N - I - 1);
 
     if (auto *FTTP = dyn_cast<TemplateTypeParmDecl>(FromParam)) {
@@ -3353,20 +3354,6 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
 }
 
 void ASTReader::loadDeclUpdateRecords(serialization::DeclID ID, Decl *D) {
-  // Load the pending visible updates for this decl context, if it has any.
-  auto I = PendingVisibleUpdates.find(ID);
-  if (I != PendingVisibleUpdates.end()) {
-    auto VisibleUpdates = std::move(I->second);
-    PendingVisibleUpdates.erase(I);
-
-    auto *DC = cast<DeclContext>(D)->getPrimaryContext();
-    for (const PendingVisibleUpdate &Update : VisibleUpdates)
-      Lookups[DC].Table.add(
-          Update.Mod, Update.Data,
-          reader::ASTDeclContextNameLookupTrait(*this, *Update.Mod));
-    DC->setHasExternalVisibleStorage(true);
-  }
-
   // The declaration may have been modified by files later in the chain.
   // If this is the case, read the record containing the updates from each file
   // and pass it to ASTDeclReader to make the modifications.
@@ -3400,6 +3387,20 @@ void ASTReader::loadDeclUpdateRecords(serialization::DeclID ID, Decl *D) {
         WasInteresting = true;
       }
     }
+  }
+
+  // Load the pending visible updates for this decl context, if it has any.
+  auto I = PendingVisibleUpdates.find(ID);
+  if (I != PendingVisibleUpdates.end()) {
+    auto VisibleUpdates = std::move(I->second);
+    PendingVisibleUpdates.erase(I);
+
+    auto *DC = cast<DeclContext>(D)->getPrimaryContext();
+    for (const PendingVisibleUpdate &Update : VisibleUpdates)
+      Lookups[DC].Table.add(
+          Update.Mod, Update.Data,
+          reader::ASTDeclContextNameLookupTrait(*this, *Update.Mod));
+    DC->setHasExternalVisibleStorage(true);
   }
 }
 
@@ -3673,7 +3674,7 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
 
     case UPD_CXX_INSTANTIATED_CLASS_DEFINITION: {
       auto *RD = cast<CXXRecordDecl>(D);
-      auto *OldDD = RD->DefinitionData.getNotUpdated();
+      auto *OldDD = RD->getCanonicalDecl()->DefinitionData.getNotUpdated();
       bool HadRealDefinition =
           OldDD && (OldDD->Definition != RD ||
                     !Reader.PendingFakeDefinitionData.count(OldDD));

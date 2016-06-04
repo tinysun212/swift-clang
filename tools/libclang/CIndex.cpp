@@ -3110,6 +3110,9 @@ clang_parseTranslationUnit_Impl(CXIndex CIdx, const char *source_filename,
   IntrusiveRefCntPtr<DiagnosticsEngine>
     Diags(CompilerInstance::createDiagnostics(new DiagnosticOptions));
 
+  if (options & CXTranslationUnit_KeepGoing)
+    Diags->setFatalsAsError(true);
+
   // Recover resources if we crash before exiting this function.
   llvm::CrashRecoveryContextCleanupRegistrar<DiagnosticsEngine,
     llvm::CrashRecoveryContextReleaseRefCleanup<DiagnosticsEngine> >
@@ -3527,12 +3530,13 @@ static const ExprEvalResult* evaluateExpr(Expr *expr, CXCursor C) {
       rettype = callExpr->getCallReturnType(ctx);
 
       if (rettype->isVectorType() || callExpr->getNumArgs() > 1) {
+        clang_EvalResult_dispose((CXEvalResult *)result);
         return nullptr;
       }
       if (rettype->isIntegralType(ctx) || rettype->isRealFloatingType()) {
         if(callExpr->getNumArgs() == 1 &&
-              !callExpr->getArg(0)->getType()->isIntegralType(ctx)){
-
+              !callExpr->getArg(0)->getType()->isIntegralType(ctx)) {
+          clang_EvalResult_dispose((CXEvalResult *)result);
           return nullptr;
         }
       } else if(rettype.getAsString() == "CFStringRef") {

@@ -668,6 +668,11 @@ message=\ *string-literal*
   error about use of a deprecated or obsoleted declaration.  Useful to direct
   users to replacement APIs.
 
+replacement=\ *string-literal*
+  Additional message text that Clang will use to provide Fix-It when emitting
+  a warning about use of a deprecated declaration. The Fix-It will replace
+  the deprecated declaration with the new declaration specified.
+
 Multiple availability attributes can be placed on a declaration, which may
 correspond to different platforms.  Only the availability attribute with the
 platform corresponding to the target platform will be used; any others will be
@@ -692,14 +697,20 @@ are:
   Apple's watchOS operating system.  The minimum deployment target is specified by
   the ``-mwatchos-version-min=*version*`` command-line argument.
 
-A declaration can be used even when deploying back to a platform version prior
-to when the declaration was introduced.  When this happens, the declaration is
-`weakly linked
+A declaration can typically be used even when deploying back to a platform
+version prior to when the declaration was introduced.  When this happens, the
+declaration is `weakly linked
 <https://developer.apple.com/library/mac/#documentation/MacOSX/Conceptual/BPFrameworks/Concepts/WeakLinking.html>`_,
 as if the ``weak_import`` attribute were added to the declaration.  A
 weakly-linked declaration may or may not be present a run-time, and a program
 can determine whether the declaration is present by checking whether the
 address of that declaration is non-NULL.
+
+The flag ``strict`` disallows using API when deploying back to a
+platform version prior to when the declaration was introduced.  An
+attempt to use such API before its introduction causes a hard error.
+Weakly-linking is almost always a better API choice, since it allows
+users to query availability at runtime.
 
 If there are multiple declarations of the same entity, the availability
 attributes must either match on a per-platform basis or later
@@ -1809,7 +1820,6 @@ All of these conventions except ``none`` require the function to have an error p
 
 def SwiftNewtypeDocs : Documentation {
   let Category = SwiftDocs;
-  let Heading = "swift_newtype";
   let Content = [{
 The ``swift_newtype`` attribute indicates that the typedef to which the attribute appertains is imported as a new Swift type of the typedef's name.
 * ``swift_newtype(struct)`` means that a Swift struct will be created for this typedef.
@@ -1970,6 +1980,28 @@ hardware design, touch the red zone.
   The exception handler should only be used for exceptions which push an
   error code and all other exceptions must use the interrupt handler.
   The system will crash if the wrong handler is used.
+  }];
+}
+
+def DeprecatedDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``deprecated`` attribute can be applied to a function, a variable, or a
+type. This is useful when identifying functions, variables, or types that are
+expected to be removed in a future version of a program.
+
+Consider the function declaration for a hypothetical function ``f``:
+
+.. code-block:: c++
+
+  void f(void) __attribute__((deprecated("message", "replacement")));
+
+When spelled as `__attribute__((deprecated))`, the deprecated attribute can have
+two optional string arguments. The first one is the message to display when
+emitting the warning; the second one enables the compiler to provide a Fix-It
+to replace the deprecated name with a new name. Otherwise, when spelled as
+`[[gnu::deprecated]] or [[deprecated]]`, the attribute can have one optional
+string argument which is the message to display when emitting the warning.
   }];
 }
 

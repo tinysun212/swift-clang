@@ -3009,15 +3009,57 @@ def err_objc_attr_protocol_requires_definition : Error<
   "attribute %0 can only be applied to @protocol definitions, not forward declarations">;
 
 // Swift attributes
-def err_attr_swift_name_decl_kind : Error<
-  "%0 attribute cannot be applied to this declaration">;
-def err_attr_swift_name_identifier : Error<
-  "parameter of %0 attribute must be an ASCII identifier string">;
-def err_attr_swift_name_function : Error<
-  "parameter of %0 attribute must be a Swift function name string">;
+def warn_attr_swift_name_decl_kind : Warning<
+  "%0 attribute cannot be applied to this declaration">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_function : Warning<
+  "parameter of %0 attribute must be a Swift function name string">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_function_no_prototype : Warning<
+  "%0 attribute can only be applied to function declarations with prototypes">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_context_name_invalid_identifier : Warning<
+  "%0 attribute has invalid identifier for context name">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_basename_invalid_identifier : Warning<
+  "%0 attribute has invalid identifier for base name">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_parameter_invalid_identifier : Warning<
+  "%0 attribute has invalid identifier for parameter name">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_missing_parameters : Warning<
+  "%0 attribute is missing parameter label clause">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_subscript_not_accessor : Warning<
+  "%0 attribute for 'subscript' must be a getter or setter">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_subscript_no_parameter : Warning<
+  "%0 attribute for 'subscript' must take at least one parameter">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_subscript_getter_newValue : Warning<
+  "%0 attribute for 'subscript' getter cannot take a 'newValue:' parameter">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_subscript_setter_no_newValue : Warning<
+  "%0 attribute for 'subscript' setter must take a 'newValue:' parameter">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_subscript_setter_multiple_newValues : Warning<
+  "%0 attribute for 'subscript' setter cannot take multiple 'newValue:' parameters">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_getter_parameters : Warning<
+  "%0 attribute for getter must not take any parameters besides 'self:'">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_setter_parameters : Warning<
+  "%0 attribute for setter must take one parameter for new value">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_multiple_selfs : Warning<
+  "%0 attribute cannot specify more than one 'self:' parameter">,
+  InGroup<SwiftNameAttribute>;
+def warn_attr_swift_name_static_subscript : Warning<
+  "%0 attribute for 'subscript' must take a 'self:' parameter">,
+  InGroup<SwiftNameAttribute>;
 def warn_attr_swift_name_num_params : Warning<
   "too %select{few|many}0 parameters in %1 attribute (expected %2; got %3)">,
-  InGroup<DiagGroup<"swift-name-attribute">>;
+  InGroup<SwiftNameAttribute>;
 def err_attr_swift_error_no_error_parameter : Error<
   "%0 attribute can only be applied to a %select{function|method}1 "
   "with an error parameter">;
@@ -4313,7 +4355,7 @@ def err_redefinition_different_typedef : Error<
   "%select{typedef|type alias|type alias template}0 "
   "redefinition with different types%diff{ ($ vs $)|}1,2">;
 def err_tag_reference_non_tag : Error<
-  "elaborated type refers to %select{a non-tag type|a typedef|a type alias|a template|a type alias template}0">;
+  "elaborated type refers to %select{a non-tag type|a typedef|a type alias|a template|a type alias template|a template template argument}0">;
 def err_tag_reference_conflict : Error<
   "implicit declaration introduced by elaborated type conflicts with "
   "%select{a declaration|a typedef|a type alias|a template}0 of the same name">;
@@ -5630,6 +5672,16 @@ def note_parameter_here : Note<
   "passing argument to parameter here">;
 def note_method_return_type_change : Note<
   "compiler has implicitly changed method %0 return type">;
+
+def warn_impl_required_for_class_property : Warning<
+  "class property %0 requires method %1 to be defined - "
+  "use @dynamic or provide a method implementation "
+  "in this class implementation">,
+  InGroup<ObjCPropertyImpl>;
+def warn_impl_required_in_category_for_class_property : Warning<
+  "class property %0 requires method %1 to be defined - "
+  "use @dynamic or provide a method implementation in this category">,
+  InGroup<ObjCPropertyImpl>;
 
 // C++ casts
 // These messages adhere to the TryCast pattern: %0 is an int specifying the
@@ -7122,6 +7174,8 @@ def warn_scanf_scanlist_incomplete : Warning<
 def note_format_string_defined : Note<"format string is defined here">;
 def note_format_fix_specifier : Note<"did you mean to use '%0'?">;
 def note_printf_c_str: Note<"did you mean to call the %0 method?">;
+def note_format_security_fixit: Note<
+  "treat the string as an argument to avoid this">;
 
 def warn_null_arg : Warning<
   "null passed to a callee that requires a non-null argument">,
@@ -7342,8 +7396,9 @@ def err_va_start_used_in_wrong_abi_function : Error<
   "'va_start' used in %select{System V|Win64}0 ABI function">;
 def err_ms_va_start_used_in_sysv_function : Error<
   "'__builtin_ms_va_start' used in System V ABI function">;
-def warn_second_parameter_of_va_start_not_last_named_argument : Warning<
-  "second parameter of 'va_start' not last named argument">, InGroup<Varargs>;
+def warn_second_arg_of_va_start_not_last_named_param : Warning<
+  "second argument to 'va_start' is not the last named parameter">,
+  InGroup<Varargs>;
 def warn_va_start_of_reference_type_is_undefined : Warning<
   "'va_start' has undefined behavior with reference types">, InGroup<Varargs>;
 def err_first_argument_to_va_arg_not_of_type_va_list : Error<
@@ -8288,5 +8343,13 @@ def err_objc_type_arg_does_not_match_bound : Error<
 def warn_objc_redundant_qualified_class_type : Warning<
   "parameterized class %0 already conforms to the protocols listed; did you "
   "forget a '*'?">, InGroup<ObjCProtocolQualifiers>;
+
+def warn_block_literal_attributes_on_omitted_return_type : Warning<
+  "attribute %0 ignored, because it cannot be applied to omitted return type">,
+  InGroup<IgnoredAttributes>;
+
+def warn_block_literal_qualifiers_on_omitted_return_type : Warning<
+  "'%0' qualifier on omitted return type %1 has no effect">,
+  InGroup<IgnoredQualifiers>;
 
 } // end of sema component.

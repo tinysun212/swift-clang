@@ -52,6 +52,13 @@ void Preprocessor::appendMacroDirective(IdentifierInfo *II, MacroDirective *MD){
   StoredMD.setLatest(MD);
   StoredMD.overrideActiveModuleMacros(*this, II);
 
+  if (needModuleMacros()) {
+    // Track that we created a new macro directive, so we know we should
+    // consider building a ModuleMacro for it when we get to the end of
+    // the module.
+    PendingModuleMacroNames.push_back(II);
+  }
+
   // Set up the identifier as having associated macro history.
   II->setHasMacroDefinition(true);
   if (!MD->isDefined() && LeafModuleMacros.find(II) == LeafModuleMacros.end())
@@ -1063,10 +1070,14 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
       .Case("attribute_availability_tvos", true)
       .Case("attribute_availability_watchos", true)
       .Case("attribute_availability_swift", true)
+      .Case("attribute_availability_with_strict", true)
+      .Case("attribute_availability_with_replacement", true)
+      .Case("attribute_availability_in_templates", true)
       .Case("attribute_cf_returns_not_retained", true)
       .Case("attribute_cf_returns_retained", true)
       .Case("attribute_cf_returns_on_parameters", true)
       .Case("attribute_deprecated_with_message", true)
+      .Case("attribute_deprecated_with_replacement", true)
       .Case("attribute_ext_vector_type", true)
       .Case("attribute_ns_returns_not_retained", true)
       .Case("attribute_ns_returns_retained", true)
