@@ -255,7 +255,6 @@ namespace {
 
     void EmitData(raw_ostream &out, key_type_ref key, data_type_ref data,
                   unsigned len) {
-      static_assert(sizeof(IdentifierID) <= 4, "DeclID too large");
       endian::Writer<little> writer(out);
       writer.write<uint32_t>(data);
     }
@@ -344,8 +343,8 @@ namespace {
     std::pair<unsigned, unsigned> EmitKeyDataLength(raw_ostream &out,
                                                     key_type_ref key,
                                                     data_type_ref data) {
-      uint32_t keyLength = sizeof(IdentifierID) + 1;
-      uint32_t dataLength = sizeof(ContextID)
+      uint32_t keyLength = sizeof(uint32_t) + 1;
+      uint32_t dataLength = sizeof(uint32_t)
                           + getCommonTypeInfoSize(data.second)
                           + dataBytes;
       endian::Writer<little> writer(out);
@@ -356,14 +355,14 @@ namespace {
 
     void EmitKey(raw_ostream &out, key_type_ref key, unsigned len) {
       endian::Writer<little> writer(out);
-      writer.write<IdentifierID>(key.first);
+      writer.write<uint32_t>(key.first);
       writer.write<uint8_t>(key.second);
     }
 
     void EmitData(raw_ostream &out, key_type_ref key, data_type_ref data,
                   unsigned len) {
       endian::Writer<little> writer(out);
-      writer.write<StoredContextID >(data.first);
+      writer.write<uint32_t>(data.first);
 
       emitCommonTypeInfo(out, data.second);
 
@@ -445,7 +444,7 @@ namespace {
     std::pair<unsigned, unsigned> EmitKeyDataLength(raw_ostream &out,
                                                     key_type_ref key,
                                                     data_type_ref data) {
-      uint32_t keyLength = sizeof(IdentifierID) + sizeof(IdentifierID);
+      uint32_t keyLength = sizeof(uint32_t) + sizeof(uint32_t);
       uint32_t dataLength = getVariableInfoSize(data);
       endian::Writer<little> writer(out);
       writer.write<uint16_t>(keyLength);
@@ -455,8 +454,8 @@ namespace {
 
     void EmitKey(raw_ostream &out, key_type_ref key, unsigned len) {
       endian::Writer<little> writer(out);
-      writer.write<IdentifierID>(key.first);
-      writer.write<IdentifierID>(key.second);
+      writer.write<uint32_t>(key.first);
+      writer.write<uint32_t>(key.second);
     }
 
     void EmitData(raw_ostream &out, key_type_ref key, data_type_ref data,
@@ -542,7 +541,7 @@ namespace {
     std::pair<unsigned, unsigned> EmitKeyDataLength(raw_ostream &out,
                                                     key_type_ref key,
                                                     data_type_ref data) {
-      uint32_t keyLength = sizeof(IdentifierID) + sizeof(SelectorID) + 1;
+      uint32_t keyLength = sizeof(uint32_t) + sizeof(uint32_t) + 1;
       uint32_t dataLength = getFunctionInfoSize(data) + 3;
       endian::Writer<little> writer(out);
       writer.write<uint16_t>(keyLength);
@@ -552,8 +551,8 @@ namespace {
 
     void EmitKey(raw_ostream &out, key_type_ref key, unsigned len) {
       endian::Writer<little> writer(out);
-      writer.write<IdentifierID>(std::get<0>(key));
-      writer.write<SelectorID>(std::get<1>(key));
+      writer.write<uint32_t>(std::get<0>(key));
+      writer.write<uint32_t>(std::get<1>(key));
       writer.write<uint8_t>(std::get<2>(key));
     }
 
@@ -615,8 +614,8 @@ namespace {
                                                     key_type_ref key,
                                                     data_type_ref data) {
       uint32_t keyLength = sizeof(uint16_t) 
-                         + sizeof(IdentifierID) * key.Identifiers.size();
-      uint32_t dataLength = sizeof(SelectorID);
+                         + sizeof(uint32_t) * key.Identifiers.size();
+      uint32_t dataLength = sizeof(uint32_t);
       endian::Writer<little> writer(out);
       writer.write<uint16_t>(keyLength);
       writer.write<uint16_t>(dataLength);
@@ -627,14 +626,14 @@ namespace {
       endian::Writer<little> writer(out);
       writer.write<uint16_t>(key.NumPieces);
       for (auto piece : key.Identifiers) {
-        writer.write<IdentifierID>(piece);
+        writer.write<uint32_t>(piece);
       }
     }
 
     void EmitData(raw_ostream &out, key_type_ref key, data_type_ref data,
                   unsigned len) {
       endian::Writer<little> writer(out);
-      writer.write<SelectorID>(data);
+      writer.write<uint32_t>(data);
     }
   };
 } // end anonymous namespace
@@ -681,7 +680,7 @@ namespace {
     std::pair<unsigned, unsigned> EmitKeyDataLength(raw_ostream &out,
                                                     key_type_ref key,
                                                     data_type_ref data) {
-      uint32_t keyLength = sizeof(IdentifierID);
+      uint32_t keyLength = sizeof(uint32_t);
       uint32_t dataLength = getVariableInfoSize(data);
       endian::Writer<little> writer(out);
       writer.write<uint16_t>(keyLength);
@@ -691,7 +690,7 @@ namespace {
 
     void EmitKey(raw_ostream &out, key_type_ref key, unsigned len) {
       endian::Writer<little> writer(out);
-      writer.write<IdentifierID>(key);
+      writer.write<uint32_t>(key);
     }
 
     void EmitData(raw_ostream &out, key_type_ref key, data_type_ref data,
@@ -743,7 +742,7 @@ namespace {
     std::pair<unsigned, unsigned> EmitKeyDataLength(raw_ostream &out,
                                                     key_type_ref key,
                                                     data_type_ref data) {
-      uint32_t keyLength = sizeof(IdentifierID);
+      uint32_t keyLength = sizeof(uint32_t);
       uint32_t dataLength = getFunctionInfoSize(data);
       endian::Writer<little> writer(out);
       writer.write<uint16_t>(keyLength);
@@ -753,7 +752,7 @@ namespace {
 
     void EmitKey(raw_ostream &out, key_type_ref key, unsigned len) {
       endian::Writer<little> writer(out);
-      writer.write<IdentifierID>(key);
+      writer.write<uint32_t>(key);
     }
 
     void EmitData(raw_ostream &out, key_type_ref key, data_type_ref data,

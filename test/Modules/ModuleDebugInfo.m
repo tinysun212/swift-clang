@@ -31,7 +31,7 @@
 // CHECK: ![[MODULE]] = !DIModule(scope: null, name: "DebugObjC
 
 // CHECK: ![[TD_ENUM:.*]] = !DICompositeType(tag: DW_TAG_enumeration_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
 // CHECK-SAME:             elements:
 
 // CHECK: !DISubprogram(name: "+[ObjCClass classMethod]",
@@ -55,7 +55,7 @@
 // CHECK-SAME:             elements:
 
 // CHECK: ![[TD_UNION:.*]] = distinct !DICompositeType(tag: DW_TAG_union_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
 // CHECK-SAME:             elements:
 
 // CHECK: !DIDerivedType(tag: DW_TAG_typedef, name: "TypedefUnion",
@@ -65,16 +65,18 @@
 // CHECK-SAME:           baseType: ![[TD_ENUM:.*]])
 
 // CHECK: ![[TD_STRUCT:.*]] = distinct !DICompositeType(tag: DW_TAG_structure_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
 // CHECK-SAME:             elements:
 // CHECK: !DIDerivedType(tag: DW_TAG_typedef, name: "TypedefStruct",
 // CHECK-SAME:           baseType: ![[TD_STRUCT]])
 
 // CHECK: !DICompositeType(tag: DW_TAG_union_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
+// CHECK-SAME:             )
 
 // CHECK: !DICompositeType(tag: DW_TAG_structure_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
+// CHECK-SAME:             )
 
 // CHECK-NEG-NOT: !DICompositeType(tag: DW_TAG_structure_type, name: "PureForwardDecl"
 

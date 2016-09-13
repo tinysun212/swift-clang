@@ -16,16 +16,17 @@
 #ifndef LLVM_CLANG_CODEGEN_CGFUNCTIONINFO_H
 #define LLVM_CLANG_CODEGEN_CGFUNCTIONINFO_H
 
+#include "clang/AST/Attr.h"
 #include "clang/AST/CanonicalType.h"
 #include "clang/AST/CharUnits.h"
+#include "clang/AST/Decl.h"
 #include "clang/AST/Type.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/ADT/FoldingSet.h"
+#include "llvm/Support/TrailingObjects.h"
 #include <cassert>
 
 namespace clang {
-class Decl;
-
 namespace CodeGen {
 
 /// ABIArgInfo - Helper class to encapsulate information about how a
@@ -392,23 +393,34 @@ public:
   /// Compute the arguments required by the given formal prototype,
   /// given that there may be some additional, non-formal arguments
   /// in play.
+  ///
+  /// If FD is not null, this will consider pass_object_size params in FD.
   static RequiredArgs forPrototypePlus(const FunctionProtoType *prototype,
-                                       unsigned additional) {
+                                       unsigned additional,
+                                       const FunctionDecl *FD) {
     if (!prototype->isVariadic()) return All;
+    if (FD)
+      additional +=
+          llvm::count_if(FD->parameters(), [](const ParmVarDecl *PVD) {
+            return PVD->hasAttr<PassObjectSizeAttr>();
+          });
     return RequiredArgs(prototype->getNumParams() + additional);
   }
 
-  static RequiredArgs forPrototype(const FunctionProtoType *prototype) {
-    return forPrototypePlus(prototype, 0);
+  static RequiredArgs forPrototype(const FunctionProtoType *prototype,
+                                   const FunctionDecl *FD) {
+    return forPrototypePlus(prototype, 0, FD);
   }
 
-  static RequiredArgs forPrototype(CanQual<FunctionProtoType> prototype) {
-    return forPrototype(prototype.getTypePtr());
+  static RequiredArgs forPrototype(CanQual<FunctionProtoType> prototype,
+                                   const FunctionDecl *FD) {
+    return forPrototype(prototype.getTypePtr(), FD);
   }
 
   static RequiredArgs forPrototypePlus(CanQual<FunctionProtoType> prototype,
-                                       unsigned additional) {
-    return forPrototypePlus(prototype.getTypePtr(), additional);
+                                       unsigned additional,
+                                       const FunctionDecl *FD) {
+    return forPrototypePlus(prototype.getTypePtr(), additional, FD);
   }
 
   bool allowsOptionalArgs() const { return NumRequired != ~0U; }
@@ -424,13 +436,20 @@ public:
   }
 };
 
+// Implementation detail of CGFunctionInfo, factored out so it can be named
+// in the TrailingObjects base class of CGFunctionInfo.
+struct CGFunctionInfoArgInfo {
+  CanQualType type;
+  ABIArgInfo info;
+};
+
 /// CGFunctionInfo - Class to encapsulate the information about a
 /// function definition.
-class CGFunctionInfo : public llvm::FoldingSetNode {
-  struct ArgInfo {
-    CanQualType type;
-    ABIArgInfo info;
-  };
+class CGFunctionInfo final
+    : public llvm::FoldingSetNode,
+      private llvm::TrailingObjects<CGFunctionInfo, CGFunctionInfoArgInfo,
+                                    FunctionProtoType::ExtParameterInfo> {
+  typedef CGFunctionInfoArgInfo ArgInfo;
   typedef FunctionProtoType::ExtParameterInfo ExtParameterInfo;
 
   /// The LLVM::CallingConv to use for this function (as specified by the
@@ -469,19 +488,19 @@ class CGFunctionInfo : public llvm::FoldingSetNode {
   unsigned HasExtParameterInfos : 1;
 
   unsigned NumArgs;
+
   ArgInfo *getArgsBuffer() {
-    return reinterpret_cast<ArgInfo*>(this+1);
+    return getTrailingObjects<ArgInfo>();
   }
   const ArgInfo *getArgsBuffer() const {
-    return reinterpret_cast<const ArgInfo*>(this + 1);
+    return getTrailingObjects<ArgInfo>();
   }
 
   ExtParameterInfo *getExtParameterInfosBuffer() {
-    return reinterpret_cast<ExtParameterInfo*>(getArgsBuffer() + NumArgs + 1);
+    return getTrailingObjects<ExtParameterInfo>();
   }
   const ExtParameterInfo *getExtParameterInfosBuffer() const{
-    return reinterpret_cast<const ExtParameterInfo*>(
-                                               getArgsBuffer() + NumArgs + 1);
+    return getTrailingObjects<ExtParameterInfo>();
   }
 
   CGFunctionInfo() : Required(RequiredArgs::All) {}
@@ -495,6 +514,17 @@ public:
                                 CanQualType resultType,
                                 ArrayRef<CanQualType> argTypes,
                                 RequiredArgs required);
+  void operator delete(void *p) { ::operator delete(p); }
+
+  // Friending class TrailingObjects is apparently not good enough for MSVC,
+  // so these have to be public.
+  friend class TrailingObjects;
+  size_t numTrailingObjects(OverloadToken<ArgInfo>) const {
+    return NumArgs + 1;
+  }
+  size_t numTrailingObjects(OverloadToken<ExtParameterInfo>) const {
+    return (HasExtParameterInfos ? NumArgs : 0);
+  }
 
   typedef const ArgInfo *const_arg_iterator;
   typedef ArgInfo *arg_iterator;

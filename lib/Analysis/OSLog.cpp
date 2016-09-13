@@ -55,9 +55,6 @@ public:
     //  * "%.16P" len (non-arg), pointer to data
     //  * "%@" pointer to objc object
 
-    if (!FS.consumesDataArgument())
-      return false;
-
     unsigned argIndex = FS.getArgIndex();
     if (argIndex >= Args.size()) {
       return false;

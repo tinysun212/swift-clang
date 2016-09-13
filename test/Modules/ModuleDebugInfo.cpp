@@ -20,25 +20,28 @@
 
 // CHECK: distinct !DICompileUnit(language: DW_LANG_{{.*}}C_plus_plus,
 // CHECK-SAME:                    isOptimized: false,
-// CHECK-SAME-NOT:                splitDebugFilename:
-// CHECK:                         dwoId:
+// CHECK-NOT:                     splitDebugFilename:
+// CHECK-SAME:                    dwoId:
 
 // CHECK: !DICompositeType(tag: DW_TAG_enumeration_type, name: "Enum"
 // CHECK-SAME:             identifier: "_ZTSN8DebugCXX4EnumE")
 // CHECK: !DINamespace(name: "DebugCXX"
 
 // CHECK: !DICompositeType(tag: DW_TAG_enumeration_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
+// CHECK-SAME:             )
 
 // CHECK: !DICompositeType(tag: DW_TAG_enumeration_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
+// CHECK-SAME:             )
 
 // CHECK: !DICompositeType(tag: DW_TAG_enumeration_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
 // CHECK-SAME:             identifier: "_ZTS11TypedefEnum")
 
 // CHECK: !DICompositeType(tag: DW_TAG_enumeration_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
+// CHECK-SAME:             )
 // CHECK: !DIEnumerator(name: "e5", value: 5)
 
 // CHECK: !DIDerivedType(tag: DW_TAG_typedef, name: "B",
@@ -46,6 +49,7 @@
 
 // This type is anchored by a function parameter.
 // CHECK: !DICompositeType(tag: DW_TAG_class_type, name: "A<void>"
+// CHECK-SAME:             elements:
 // CHECK-SAME:             templateParams:
 // CHECK-SAME:             identifier: "_ZTSN8DebugCXX1AIJvEEE")
 
@@ -55,6 +59,7 @@
 // This type is anchored by an explicit template instantiation.
 // CHECK: !DICompositeType(tag: DW_TAG_class_type,
 // CHECK-SAME:             name: "Template<int, DebugCXX::traits<int> >"
+// CHECK-SAME:             elements:
 // CHECK-SAME:             templateParams:
 // CHECK-SAME:             identifier: "_ZTSN8DebugCXX8TemplateIiNS_6traitsIiEEEE")
 
@@ -63,11 +68,13 @@
 // CHECK-SAME:             identifier: "_ZTSN8DebugCXX6traitsIiEE")
 
 // CHECK: !DICompositeType(tag: DW_TAG_structure_type, name: "traits<float>"
+// CHECK-SAME:             elements:
 // CHECK-SAME:             templateParams:
 // CHECK-SAME:             identifier: "_ZTSN8DebugCXX6traitsIfEE")
 
 // CHECK: !DICompositeType(tag: DW_TAG_class_type,
 // CHECK-SAME:             name: "Template<long, DebugCXX::traits<long> >"
+// CHECK-SAME:             elements:
 // CHECK-SAME:             templateParams:
 // CHECK-SAME:             identifier: "_ZTSN8DebugCXX8TemplateIlNS_6traitsIlEEEE")
 
@@ -85,18 +92,20 @@
 // CHECK: !DIDerivedType(tag: DW_TAG_member, name: "_vptr$FwdVirtual"
 
 // CHECK: !DICompositeType(tag: DW_TAG_union_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
 // CHECK-SAME:             identifier: "_ZTS12TypedefUnion")
 
 // CHECK: !DICompositeType(tag: DW_TAG_structure_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
 // CHECK-SAME:             identifier: "_ZTS13TypedefStruct")
 
 // CHECK: !DICompositeType(tag: DW_TAG_union_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
+// CHECK-SAME:             )
 
 // CHECK: !DICompositeType(tag: DW_TAG_structure_type,
-// CHECK-SAME-NOT:         name:
+// CHECK-NOT:              name:
+// CHECK-SAME:             )
 
 // CHECK: !DICompositeType(tag: DW_TAG_structure_type,
 // CHECK-SAME:             name: "InAnonymousNamespace",
@@ -116,7 +125,7 @@
 // CHECK-SAME:                         flags: DIFlagFwdDecl,
 // CHECK-SAME:                         identifier: "_ZTS9Template1IPvE")
 
-// Explicit instatiation.
+// Explicit instantiation.
 // CHECK: !DICompositeType(tag: DW_TAG_class_type, name: "Template1<int>",
 // CHECK-SAME:             templateParams:
 // CHECK-SAME:             identifier: "_ZTS9Template1IiE")
@@ -129,5 +138,11 @@
 // CHECK: !DICompositeType(tag: DW_TAG_structure_type, name: "Member",
 // CHECK-SAME:             flags: DIFlagFwdDecl
 // CHECK-SAME:             identifier: "_ZTSN21FwdDeclTemplateMemberIiE6MemberE")
+
+// CHECK: !DIDerivedType(tag: DW_TAG_typedef, name: "SpecializedBase",
+// CHECK-SAME:           baseType: ![[SPECIALIZEDBASE:.*]])
+// CHECK: ![[SPECIALIZEDBASE]] = !DICompositeType(tag: DW_TAG_class_type,
+// CHECK-SAME:                             name: "WithSpecializedBase<float>",
+// CHECK-SAME:                             flags: DIFlagFwdDecl,
 
 // CHECK-NEG-NOT: !DICompositeType(tag: DW_TAG_structure_type, name: "PureForwardDecl"

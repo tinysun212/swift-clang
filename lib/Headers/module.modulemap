@@ -60,6 +60,7 @@ module _Builtin_intrinsics [system] [extern_c] {
     textual header "lzcntintrin.h"
     textual header "xopintrin.h"
     textual header "fma4intrin.h"
+    textual header "mwaitxintrin.h"
 
     explicit module mm_malloc {
       header "mm_malloc.h"
@@ -67,6 +68,7 @@ module _Builtin_intrinsics [system] [extern_c] {
     }
 
     explicit module cpuid {
+      requires gnuinlineasm
       header "cpuid.h"
     }
 
@@ -75,6 +77,7 @@ module _Builtin_intrinsics [system] [extern_c] {
     }
 
     explicit module sse {
+      export mm_malloc
       export mmx
       export sse2 // note: for hackish <emmintrin.h> dependency
       header "xmmintrin.h"
@@ -154,4 +157,9 @@ module _Builtin_intrinsics [system] [extern_c] {
 
 module _Builtin_stddef_max_align_t [system] [extern_c] {
   header "__stddef_max_align_t.h"
+}
+
+module opencl_c {
+  requires opencl
+  header "opencl-c.h"
 }

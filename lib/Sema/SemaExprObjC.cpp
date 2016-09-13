@@ -1035,7 +1035,6 @@ ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR,
     
     HasPackExpansions = true;
   }
-
   
   QualType Ty
     = Context.getObjCObjectPointerType(
@@ -1818,7 +1817,7 @@ HandleExprPropertyRefExpr(const ObjCObjectPointerType *OPT,
   Selector Sel = PP.getSelectorTable().getNullarySelector(Member);
   ObjCMethodDecl *Getter = IFace->lookupInstanceMethod(Sel);
   
-  // May be founf in property's qualified list.
+  // May be found in property's qualified list.
   if (!Getter)
     Getter = LookupMethodInQualifiedType(Sel, OPT, true);
 
@@ -1838,7 +1837,7 @@ HandleExprPropertyRefExpr(const ObjCObjectPointerType *OPT,
                                            PP.getSelectorTable(), Member);
   ObjCMethodDecl *Setter = IFace->lookupInstanceMethod(SetterSel);
       
-  // May be founf in property's qualified list.
+  // May be found in property's qualified list.
   if (!Setter)
     Setter = LookupMethodInQualifiedType(SetterSel, OPT, true);
   
@@ -1886,12 +1885,29 @@ HandleExprPropertyRefExpr(const ObjCObjectPointerType *OPT,
                       LookupOrdinaryName, nullptr, nullptr,
                       llvm::make_unique<DeclFilterCCC<ObjCPropertyDecl>>(),
                       CTK_ErrorRecovery, IFace, false, OPT)) {
-    diagnoseTypo(Corrected, PDiag(diag::err_property_not_found_suggest)
-                              << MemberName << QualType(OPT, 0));
     DeclarationName TypoResult = Corrected.getCorrection();
-    return HandleExprPropertyRefExpr(OPT, BaseExpr, OpLoc,
-                                     TypoResult, MemberLoc,
-                                     SuperLoc, SuperType, Super);
+    if (TypoResult.isIdentifier() &&
+        TypoResult.getAsIdentifierInfo() == Member) {
+      // There is no need to try the correction if it is the same.
+      NamedDecl *ChosenDecl =
+        Corrected.isKeyword() ? nullptr : Corrected.getFoundDecl();
+      if (ChosenDecl && isa<ObjCPropertyDecl>(ChosenDecl))
+        if (cast<ObjCPropertyDecl>(ChosenDecl)->isClassProperty()) {
+          // This is a class property, we should not use the instance to
+          // access it.
+          Diag(MemberLoc, diag::err_class_property_found) << MemberName
+          << OPT->getInterfaceDecl()->getName()
+          << FixItHint::CreateReplacement(BaseExpr->getSourceRange(),
+                                          OPT->getInterfaceDecl()->getName());
+          return ExprError();
+        }
+    } else {
+      diagnoseTypo(Corrected, PDiag(diag::err_property_not_found_suggest)
+                                << MemberName << QualType(OPT, 0));
+      return HandleExprPropertyRefExpr(OPT, BaseExpr, OpLoc,
+                                       TypoResult, MemberLoc,
+                                       SuperLoc, SuperType, Super);
+    }
   }
   ObjCInterfaceDecl *ClassDeclared;
   if (ObjCIvarDecl *Ivar = 
@@ -1918,8 +1934,6 @@ HandleExprPropertyRefExpr(const ObjCObjectPointerType *OPT,
           << MemberName << BaseExpr->getSourceRange();
   return ExprError();
 }
-
-
 
 ExprResult Sema::
 ActOnClassPropertyRefExpr(IdentifierInfo &receiverName,
@@ -2035,7 +2049,7 @@ class ObjCInterfaceOrSuperCCC : public CorrectionCandidateCallback {
   }
 };
 
-}
+} // end anonymous namespace
 
 Sema::ObjCMessageKind Sema::getObjCMessageKind(Scope *S,
                                                IdentifierInfo *Name,
@@ -2186,7 +2200,6 @@ ExprResult Sema::ActOnSuperMessage(Scope *S,
                            LBracLoc, SelectorLocs, RBracLoc, Args);
 }
 
-
 ExprResult Sema::BuildClassMessageImplicit(QualType ReceiverType,
                                            bool isSuperReceiver,
                                            SourceLocation Loc,
@@ -2201,7 +2214,6 @@ ExprResult Sema::BuildClassMessageImplicit(QualType ReceiverType,
                           /*SuperLoc=*/isSuperReceiver ? Loc : SourceLocation(),
                            Sel, Method, Loc, Loc, Loc, Args,
                            /*isImplicit=*/true);
-
 }
 
 static void applyCocoaAPICheck(Sema &S, const ObjCMessageExpr *Msg,
@@ -2467,7 +2479,6 @@ ExprResult Sema::ActOnClassMessage(Scope *S,
   QualType ReceiverType = GetTypeFromParser(Receiver, &ReceiverTypeInfo);
   if (ReceiverType.isNull())
     return ExprError();
-
 
   if (!ReceiverTypeInfo)
     ReceiverTypeInfo = Context.getTrivialTypeSourceInfo(ReceiverType, LBracLoc);
@@ -3070,11 +3081,13 @@ enum ARCConversionTypeClass {
   /// struct A*
   ACTC_coreFoundation
 };
+
 static bool isAnyRetainable(ARCConversionTypeClass ACTC) {
   return (ACTC == ACTC_retainable ||
           ACTC == ACTC_coreFoundation ||
           ACTC == ACTC_voidPtr);
 }
+
 static bool isAnyCLike(ARCConversionTypeClass ACTC) {
   return ACTC == ACTC_none ||
          ACTC == ACTC_voidPtr ||
@@ -3346,7 +3359,7 @@ namespace {
       }
     }
   };
-}
+} // end anonymous namespace
 
 bool Sema::isKnownName(StringRef name) {
   if (name.empty())
@@ -3800,7 +3813,6 @@ void Sema::CheckObjCBridgeRelatedCast(QualType castType, Expr *castExpr) {
     else if (PRE->isImplicitProperty()) {
       if (ObjCMethodDecl *Getter = PRE->getImplicitPropertyGetter())
         SrcType = Getter->getReturnType();
-      
     }
   }
   
@@ -3810,7 +3822,6 @@ void Sema::CheckObjCBridgeRelatedCast(QualType castType, Expr *castExpr) {
     return;
   CheckObjCBridgeRelatedConversions(castExpr->getLocStart(),
                                     castType, SrcType, castExpr);
-  return;
 }
 
 bool Sema::CheckTollFreeBridgeStaticCast(QualType castType, Expr *castExpr,
@@ -4073,7 +4084,7 @@ Sema::CheckObjCARCConversion(SourceRange castRange, QualType castType,
     castExpr = ImplicitCastExpr::Create(Context, castExpr->getType(),
                                         CK_ARCConsumeObject, castExpr,
                                         nullptr, VK_RValue);
-    ExprNeedsCleanups = true;
+    Cleanup.setExprNeedsCleanups(true);
     return ACR_okay;
   }
 
@@ -4316,7 +4327,7 @@ ExprResult Sema::BuildObjCBridgedCast(SourceLocation LParenLoc,
                                                    TSInfo, SubExpr);
   
   if (MustConsume) {
-    ExprNeedsCleanups = true;
+    Cleanup.setExprNeedsCleanups(true);
     Result = ImplicitCastExpr::Create(Context, T, CK_ARCConsumeObject, Result, 
                                       nullptr, VK_RValue);
   }
