@@ -4533,7 +4533,6 @@ public:
       : X86_64TargetInfo(Triple, Opts) {
     TLSSupported = false;
     WCharType = UnsignedShort;
-    this->UserLabelPrefix = "";
   }
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override {
