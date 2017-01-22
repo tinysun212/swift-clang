@@ -36,7 +36,7 @@ const uint16_t VERSION_MAJOR = 0;
 /// API notes file minor version number.
 ///
 /// When the format changes IN ANY WAY, this number should be incremented.
-const uint16_t VERSION_MINOR = 13;  // Function/method parameters
+const uint16_t VERSION_MINOR = 21;  // Override types
 
 using IdentifierID = PointerEmbeddedInt<unsigned, 31>;
 using IdentifierIDField = BCVBR<16>;
@@ -60,8 +60,8 @@ enum BlockID {
   /// The identifier data block, which maps identifier strings to IDs.
   IDENTIFIER_BLOCK_ID,
 
-  /// The Objective-C class data block, which maps Objective-C class
-  /// names to information about the class.
+  /// The Objective-C context data block, which contains information about
+  /// Objective-C classes and protocols.
   OBJC_CONTEXT_BLOCK_ID,
 
   /// The Objective-C property data block, which maps Objective-C
@@ -106,7 +106,8 @@ namespace control_block {
   enum {
     METADATA = 1,
     MODULE_NAME = 2,
-    MODULE_OPTIONS = 3
+    MODULE_OPTIONS = 3,
+    SOURCE_FILE = 4,
   };
 
   using MetadataLayout = BCRecordLayout<
@@ -124,6 +125,12 @@ namespace control_block {
     MODULE_OPTIONS,
     BCFixed<1> // SwiftInferImportAsMember
   >;
+
+  using SourceFileLayout = BCRecordLayout<
+    SOURCE_FILE,
+    BCVBR<16>, // file size
+    BCVBR<16>  // creation time
+  >;
 }
 
 namespace identifier_block {
@@ -140,13 +147,20 @@ namespace identifier_block {
 
 namespace objc_context_block {
   enum {
-    OBJC_CONTEXT_DATA = 1,
+    OBJC_CONTEXT_ID_DATA = 1,
+    OBJC_CONTEXT_INFO_DATA = 2,
   };
 
-  using ObjCContextDataLayout = BCRecordLayout<
-    OBJC_CONTEXT_DATA,  // record ID
+  using ObjCContextIDLayout = BCRecordLayout<
+    OBJC_CONTEXT_ID_DATA,  // record ID
     BCVBR<16>,  // table offset within the blob (see below)
-    BCBlob  // map from ObjC class names (as IDs) to ObjC class information
+    BCBlob  // map from ObjC class names/protocol (as IDs) to context IDs
+  >;
+
+  using ObjCContextInfoLayout = BCRecordLayout<
+    OBJC_CONTEXT_INFO_DATA,  // record ID
+    BCVBR<16>,  // table offset within the blob (see below)
+    BCBlob      // map from ObjC context IDs to context information.
   >;
 }
 

@@ -282,7 +282,7 @@ public:
       // Print the IR for the PCH container to the debug output.
       llvm::SmallString<0> Buffer;
       clang::EmitBackendOutput(
-          Diags, CodeGenOpts, TargetOpts, LangOpts,
+          Diags, HeaderSearchOpts, CodeGenOpts, TargetOpts, LangOpts,
           Ctx.getTargetInfo().getDataLayout(), M.get(),
           BackendAction::Backend_EmitLL,
           llvm::make_unique<llvm::raw_svector_ostream>(Buffer));
@@ -290,9 +290,10 @@ public:
     });
 
     // Use the LLVM backend to emit the pch container.
-    clang::EmitBackendOutput(Diags, CodeGenOpts, TargetOpts, LangOpts,
-                             Ctx.getTargetInfo().getDataLayout(), M.get(),
-                             BackendAction::Backend_EmitObj, std::move(OS));
+    clang::EmitBackendOutput(Diags, HeaderSearchOpts, CodeGenOpts, TargetOpts,
+                             LangOpts, Ctx.getTargetInfo().getDataLayout(),
+                             M.get(), BackendAction::Backend_EmitObj,
+                             std::move(OS));
 
     // Free the memory for the temporary buffer.
     llvm::SmallVector<char, 0> Empty;
@@ -312,8 +313,9 @@ ObjectFilePCHContainerWriter::CreatePCHContainerGenerator(
       CI, MainFileName, OutputFileName, std::move(OS), Buffer);
 }
 
-void ObjectFilePCHContainerReader::ExtractPCH(
-    llvm::MemoryBufferRef Buffer, llvm::BitstreamReader &StreamFile) const {
+StringRef
+ObjectFilePCHContainerReader::ExtractPCH(llvm::MemoryBufferRef Buffer) const {
+  StringRef PCH;
   auto OFOrErr = llvm::object::ObjectFile::createObjectFile(Buffer);
   if (OFOrErr) {
     auto &OF = OFOrErr.get();
@@ -323,10 +325,8 @@ void ObjectFilePCHContainerReader::ExtractPCH(
       StringRef Name;
       Section.getName(Name);
       if ((!IsCOFF && Name == "__clangast") || (IsCOFF && Name == "clangast")) {
-        StringRef Buf;
-        Section.getContents(Buf);
-        return StreamFile.init((const unsigned char *)Buf.begin(),
-                               (const unsigned char *)Buf.end());
+        Section.getContents(PCH);
+        return PCH;
       }
     }
   }
@@ -334,9 +334,9 @@ void ObjectFilePCHContainerReader::ExtractPCH(
     if (EIB.convertToErrorCode() ==
         llvm::object::object_error::invalid_file_type)
       // As a fallback, treat the buffer as a raw AST.
-      StreamFile.init((const unsigned char *)Buffer.getBufferStart(),
-                      (const unsigned char *)Buffer.getBufferEnd());
+      PCH = Buffer.getBuffer();
     else
       EIB.log(llvm::errs());
   });
+  return PCH;
 }

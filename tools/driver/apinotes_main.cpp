@@ -44,8 +44,7 @@ int cc1apinotes_main(ArrayRef<const char *> Argv, const char *Argv0,
                                "Convert binary format to YAML"),
                     clEnumValN(api_notes::ActionType::Dump,
                                "dump", 
-                               "Parse and dump the output"),
-                    clEnumValEnd),
+                               "Parse and dump the output")),
          cl::cat(APINotesCategory));
 
   static cl::opt<std::string>
@@ -119,7 +118,7 @@ int cc1apinotes_main(ArrayRef<const char *> Argv, const char *Argv0,
     llvm::raw_fd_ostream os(OutputFilename, EC,
                             llvm::sys::fs::OpenFlags::F_None);
 
-    if (api_notes::compileAPINotes(input, os, targetOS))
+    if (api_notes::compileAPINotes(input, /*sourceFile=*/nullptr, os, targetOS))
       return 1;
     
     os.flush();

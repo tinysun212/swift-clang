@@ -143,12 +143,15 @@ class Argument<string name, bit optional, bit fake = 0> {
   bit Fake = fake;
 }
 
-class BoolArgument<string name, bit opt = 0> : Argument<name, opt>;
+class BoolArgument<string name, bit opt = 0, bit fake = 0> : Argument<name, opt,
+                                                                      fake>;
 class IdentifierArgument<string name, bit opt = 0> : Argument<name, opt>;
 class IntArgument<string name, bit opt = 0> : Argument<name, opt>;
 class StringArgument<string name, bit opt = 0> : Argument<name, opt>;
 class ExprArgument<string name, bit opt = 0> : Argument<name, opt>;
-class FunctionArgument<string name, bit opt = 0> : Argument<name, opt>;
+class FunctionArgument<string name, bit opt = 0, bit fake = 0> : Argument<name,
+                                                                          opt,
+                                                                          fake>;
 class TypeArgument<string name, bit opt = 0> : Argument<name, opt>;
 class UnsignedArgument<string name, bit opt = 0> : Argument<name, opt>;
 class VariadicUnsignedArgument<string name> : Argument<name, 1>;
@@ -192,6 +195,9 @@ class VariadicEnumArgument<string name, string type, list<string> values,
   list<string> Enums = enums;
 }
 
+// Represents an attribute wrapped by another attribute.
+class AttrArgument<string name, bit opt = 0> : Argument<name, opt>;
+
 // This handles one spelling of an attribute.
 class Spelling<string name, string variety> {
   string Name = name;
@@ -201,6 +207,7 @@ class Spelling<string name, string variety> {
 
 class GNU<string name> : Spelling<name, "GNU">;
 class Declspec<string name> : Spelling<name, "Declspec">;
+class Microsoft<string name> : Spelling<name, "Microsoft">;
 class CXX11<string namespace, string name, int version = 1>
     : Spelling<name, "CXX11"> {
   string Namespace = namespace;
@@ -244,6 +251,7 @@ def MicrosoftExt : LangOpt<"MicrosoftExt">;
 def Borland : LangOpt<"Borland">;
 def CUDA : LangOpt<"CUDA">;
 def COnly : LangOpt<"CPlusPlus", 1>;
+def CPlusPlus : LangOpt<"CPlusPlus">;
 def OpenCL : LangOpt<"OpenCL">;
 def RenderScript : LangOpt<"RenderScript">;
 
@@ -255,7 +263,7 @@ class TargetArch<list<string> arches> {
   list<string> OSes;
   list<string> CXXABIs;
 }
-def TargetARM : TargetArch<["arm", "thumb"]>;
+def TargetARM : TargetArch<["arm", "thumb", "armeb", "thumbeb"]>;
 def TargetMips : TargetArch<["mips", "mipsel"]>;
 def TargetMSP430 : TargetArch<["msp430"]>;
 def TargetX86 : TargetArch<["x86"]>;
@@ -383,7 +391,7 @@ def Alias : Attr {
   let Spellings = [GCC<"alias">];
   let Args = [StringArgument<"Aliasee">];
   let Subjects = SubjectList<[Function, GlobalVar], ErrorDiag,
-                             "ExpectedFunctionGlobalVarMethodOrProperty">;
+                             "ExpectedFunctionOrGlobalVar">;
   let Documentation = [Undocumented];
 }
 
@@ -603,49 +611,53 @@ def Constructor : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+// CUDA attributes are spelled __attribute__((attr)) or __declspec(__attr__).
+
 def CUDAConstant : InheritableAttr {
-  let Spellings = [GNU<"constant">];
+  let Spellings = [GNU<"constant">, Declspec<"__constant__">];
   let Subjects = SubjectList<[Var]>;
   let LangOpts = [CUDA];
   let Documentation = [Undocumented];
 }
 
 def CUDACudartBuiltin : IgnoredAttr {
-  let Spellings = [GNU<"cudart_builtin">];
+  let Spellings = [GNU<"cudart_builtin">, Declspec<"__cudart_builtin__">];
   let LangOpts = [CUDA];
 }
 
 def CUDADevice : InheritableAttr {
-  let Spellings = [GNU<"device">];
+  let Spellings = [GNU<"device">, Declspec<"__device__">];
   let Subjects = SubjectList<[Function, Var]>;
   let LangOpts = [CUDA];
   let Documentation = [Undocumented];
 }
 
 def CUDADeviceBuiltin : IgnoredAttr {
-  let Spellings = [GNU<"device_builtin">];
+  let Spellings = [GNU<"device_builtin">, Declspec<"__device_builtin__">];
   let LangOpts = [CUDA];
 }
 
 def CUDADeviceBuiltinSurfaceType : IgnoredAttr {
-  let Spellings = [GNU<"device_builtin_surface_type">];
+  let Spellings = [GNU<"device_builtin_surface_type">,
+                   Declspec<"__device_builtin_surface_type__">];
   let LangOpts = [CUDA];
 }
 
 def CUDADeviceBuiltinTextureType : IgnoredAttr {
-  let Spellings = [GNU<"device_builtin_texture_type">];
+  let Spellings = [GNU<"device_builtin_texture_type">,
+                   Declspec<"__device_builtin_texture_type__">];
   let LangOpts = [CUDA];
 }
 
 def CUDAGlobal : InheritableAttr {
-  let Spellings = [GNU<"global">];
+  let Spellings = [GNU<"global">, Declspec<"__global__">];
   let Subjects = SubjectList<[Function]>;
   let LangOpts = [CUDA];
   let Documentation = [Undocumented];
 }
 
 def CUDAHost : InheritableAttr {
-  let Spellings = [GNU<"host">];
+  let Spellings = [GNU<"host">, Declspec<"__host__">];
   let Subjects = SubjectList<[Function]>;
   let LangOpts = [CUDA];
   let Documentation = [Undocumented];
@@ -659,7 +671,7 @@ def CUDAInvalidTarget : InheritableAttr {
 }
 
 def CUDALaunchBounds : InheritableAttr {
-  let Spellings = [GNU<"launch_bounds">];
+  let Spellings = [GNU<"launch_bounds">, Declspec<"__launch_bounds__">];
   let Args = [ExprArgument<"MaxThreads">, ExprArgument<"MinBlocks", 1>];
   let LangOpts = [CUDA];
   let Subjects = SubjectList<[ObjCMethod, FunctionLike], WarnDiag,
@@ -671,7 +683,7 @@ def CUDALaunchBounds : InheritableAttr {
 }
 
 def CUDAShared : InheritableAttr {
-  let Spellings = [GNU<"shared">];
+  let Spellings = [GNU<"shared">, Declspec<"__shared__">];
   let Subjects = SubjectList<[Var]>;
   let LangOpts = [CUDA];
   let Documentation = [Undocumented];
@@ -782,6 +794,14 @@ def EmptyBases : InheritableAttr, TargetSpecificAttr<TargetMicrosoftCXXABI> {
   let Documentation = [EmptyBasesDocs];
 }
 
+def AllocSize : InheritableAttr {
+  let Spellings = [GCC<"alloc_size">];
+  let Subjects = SubjectList<[Function]>;
+  let Args = [IntArgument<"ElemSizeParam">, IntArgument<"NumElemsParam", 1>];
+  let TemplateDependent = 1;
+  let Documentation = [AllocSizeDocs];
+}
+
 def EnableIf : InheritableAttr {
   let Spellings = [GNU<"enable_if">];
   let Subjects = SubjectList<[Function]>;
@@ -810,6 +830,11 @@ def FastCall : InheritableAttr {
                    Keyword<"_fastcall">];
 //  let Subjects = [Function, ObjCMethod];
   let Documentation = [FastCallDocs];
+}
+
+def RegCall : InheritableAttr {
+  let Spellings = [GCC<"regcall">, Keyword<"__regcall">];
+  let Documentation = [RegCallDocs];
 }
 
 def Final : InheritableAttr {
@@ -1028,6 +1053,12 @@ def NoDuplicate : InheritableAttr {
   let Documentation = [NoDuplicateDocs];
 }
 
+def Convergent : InheritableAttr {
+  let Spellings = [GNU<"convergent">, CXX11<"clang", "convergent">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [ConvergentDocs];
+}
+
 def NoInline : InheritableAttr {
   let Spellings = [GCC<"noinline">, Declspec<"noinline">];
   let Subjects = SubjectList<[Function]>;
@@ -1052,24 +1083,37 @@ def NoMips16 : InheritableAttr, TargetSpecificAttr<TargetMips> {
 //
 // FIXME: This provides a sub-optimal error message if you attempt to
 // use this in CUDA, since CUDA does not use the same terminology.
-def AMDGPUNumVGPR : InheritableAttr {
-  let Spellings = [GNU<"amdgpu_num_vgpr">];
-  let Args = [UnsignedArgument<"NumVGPR">];
-  let Documentation = [AMDGPUNumVGPRDocs];
-
-// FIXME: This should be for OpenCLKernelFunction, but is not to
+//
+// FIXME: SubjectList should be for OpenCLKernelFunction, but is not to
 // workaround needing to see kernel attribute before others to know if
 // this should be rejected on non-kernels.
-  let Subjects = SubjectList<[Function], ErrorDiag,
-                             "ExpectedKernelFunction">;
+
+def AMDGPUFlatWorkGroupSize : InheritableAttr {
+  let Spellings = [GNU<"amdgpu_flat_work_group_size">];
+  let Args = [UnsignedArgument<"Min">, UnsignedArgument<"Max">];
+  let Documentation = [AMDGPUFlatWorkGroupSizeDocs];
+  let Subjects = SubjectList<[Function], ErrorDiag, "ExpectedKernelFunction">;
+}
+
+def AMDGPUWavesPerEU : InheritableAttr {
+  let Spellings = [GNU<"amdgpu_waves_per_eu">];
+  let Args = [UnsignedArgument<"Min">, UnsignedArgument<"Max", 1>];
+  let Documentation = [AMDGPUWavesPerEUDocs];
+  let Subjects = SubjectList<[Function], ErrorDiag, "ExpectedKernelFunction">;
 }
 
 def AMDGPUNumSGPR : InheritableAttr {
   let Spellings = [GNU<"amdgpu_num_sgpr">];
   let Args = [UnsignedArgument<"NumSGPR">];
-  let Documentation = [AMDGPUNumSGPRDocs];
-  let Subjects = SubjectList<[Function], ErrorDiag,
-                              "ExpectedKernelFunction">;
+  let Documentation = [AMDGPUNumSGPRNumVGPRDocs];
+  let Subjects = SubjectList<[Function], ErrorDiag, "ExpectedKernelFunction">;
+}
+
+def AMDGPUNumVGPR : InheritableAttr {
+  let Spellings = [GNU<"amdgpu_num_vgpr">];
+  let Args = [UnsignedArgument<"NumVGPR">];
+  let Documentation = [AMDGPUNumSGPRNumVGPRDocs];
+  let Subjects = SubjectList<[Function], ErrorDiag, "ExpectedKernelFunction">;
 }
 
 def NoSplitStack : InheritableAttr {
@@ -1171,6 +1215,8 @@ def NoThrow : InheritableAttr {
 }
 
 def NvWeak : IgnoredAttr {
+  // No Declspec spelling of this attribute; the CUDA headers use
+  // __attribute__((nv_weak)) unconditionally.
   let Spellings = [GNU<"nv_weak">];
   let LangOpts = [CUDA];
 }
@@ -1289,7 +1335,7 @@ def ObjCRootClass : InheritableAttr {
 def ObjCSubclassingRestricted : InheritableAttr {
   let Spellings = [GNU<"objc_subclassing_restricted">];
   let Subjects = SubjectList<[ObjCInterface], ErrorDiag>;
-  let Documentation = [Undocumented];
+  let Documentation = [ObjCSubclassingRestrictedDocs];
 }
 
 def ObjCCompleteDefinition : InheritableAttr {
@@ -1449,12 +1495,52 @@ def SwiftSuppressFactoryAsInit : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def SwiftImportPropertyAsAccessors : InheritableAttr { 
+  // This attribute has no spellings as it is only ever created implicitly
+  // from API notes.
+  let Spellings = [];
+  let SemaHandler = 0;
+  let Documentation = [Undocumented];
+}
+
+def SwiftVersioned : Attr {
+  // This attribute has no spellings as it is only ever created implicitly
+  // from API notes.
+  let Spellings = [];
+  let Args = [VersionArgument<"Version">, AttrArgument<"AttrToAdd">];
+  let SemaHandler = 0;
+  let Documentation = [Undocumented];
+}
+
+def SwiftVersionedRemoval : Attr {
+  // This attribute has no spellings as it is only ever created implicitly
+  // from API notes.
+  let Spellings = [];
+  let Args = [VersionArgument<"Version">, UnsignedArgument<"RawKind">];
+  let SemaHandler = 0;
+  let Documentation = [Undocumented];
+  let AdditionalMembers = [{
+    attr::Kind getAttrKindToRemove() const {
+      return static_cast<attr::Kind>(getRawKind());
+    }
+  }];
+}
+
 def ReqdWorkGroupSize : InheritableAttr {
   let Spellings = [GNU<"reqd_work_group_size">];
   let Args = [UnsignedArgument<"XDim">, UnsignedArgument<"YDim">,
               UnsignedArgument<"ZDim">];
   let Subjects = SubjectList<[Function], ErrorDiag>;
   let Documentation = [Undocumented];
+}
+
+def RequireConstantInit : InheritableAttr {
+  let Spellings = [GNU<"require_constant_initialization">,
+                   CXX11<"clang", "require_constant_initialization">];
+  let Subjects = SubjectList<[GlobalVar], ErrorDiag,
+                              "ExpectedStaticOrTLSVar">;
+  let Documentation = [RequireConstantInitDocs];
+  let LangOpts = [CPlusPlus];
 }
 
 def WorkGroupSizeHint :  InheritableAttr {
@@ -1595,7 +1681,8 @@ def Target : InheritableAttr {
 def TransparentUnion : InheritableAttr {
   let Spellings = [GCC<"transparent_union">];
 //  let Subjects = SubjectList<[Record, TypedefName]>;
-  let Documentation = [Undocumented];
+  let Documentation = [TransparentUnionDocs];
+  let LangOpts = [COnly];
 }
 
 def Unavailable : InheritableAttr {
@@ -1610,6 +1697,26 @@ def Unavailable : InheritableAttr {
                  "IR_ARCInitReturnsUnrelated",
                  "IR_ARCFieldWithOwnership"], 1, /*fake*/ 1>];
   let Documentation = [Undocumented];
+}
+
+def DiagnoseIf : InheritableAttr {
+  let Spellings = [GNU<"diagnose_if">];
+  let Subjects = SubjectList<[Function]>;
+  let Args = [ExprArgument<"Cond">, StringArgument<"Message">,
+              EnumArgument<"DiagnosticType",
+                           "DiagnosticType",
+                           ["error", "warning"],
+                           ["DT_Error", "DT_Warning"]>,
+              BoolArgument<"ArgDependent", 0, /*fake*/ 1>,
+              FunctionArgument<"Parent", 0, /*fake*/ 1>];
+  let DuplicatesAllowedWhileMerging = 1;
+  let LateParsed = 1;
+  let AdditionalMembers = [{
+    bool isError() const { return diagnosticType == DT_Error; }
+    bool isWarning() const { return diagnosticType == DT_Warning; }
+  }];
+  let TemplateDependent = 1;
+  let Documentation = [DiagnoseIfDocs];
 }
 
 def ArcWeakrefUnavailable : InheritableAttr {
@@ -1651,9 +1758,11 @@ def Used : InheritableAttr {
 }
 
 def Uuid : InheritableAttr {
-  let Spellings = [Declspec<"uuid">];
+  let Spellings = [Declspec<"uuid">, Microsoft<"uuid">];
   let Args = [StringArgument<"Guid">];
-//  let Subjects = SubjectList<[CXXRecord]>;
+  let Subjects = SubjectList<[Record, Enum], WarnDiag, "ExpectedEnumOrClass">;
+  // FIXME: Allow expressing logical AND for LangOpts. Our condition should be:
+  // CPlusPlus && (MicrosoftExt || Borland)
   let LangOpts = [MicrosoftExt, Borland];
   let Documentation = [Undocumented];
 }
@@ -1757,7 +1866,8 @@ def X86ForceAlignArgPointer : InheritableAttr, TargetSpecificAttr<TargetX86> {
 def NoSanitize : InheritableAttr {
   let Spellings = [GNU<"no_sanitize">, CXX11<"clang", "no_sanitize">];
   let Args = [VariadicStringArgument<"Sanitizers">];
-  let Subjects = SubjectList<[Function, ObjCMethod], ErrorDiag>;
+  let Subjects = SubjectList<[Function, ObjCMethod, GlobalVar], ErrorDiag,
+    "ExpectedFunctionMethodOrGlobalVar">;
   let Documentation = [NoSanitizeDocs];
   let AdditionalMembers = [{
     SanitizerMask getMask() const {
@@ -1779,7 +1889,8 @@ def NoSanitizeSpecific : InheritableAttr {
                    GCC<"no_sanitize_address">,
                    GCC<"no_sanitize_thread">,
                    GNU<"no_sanitize_memory">];
-  let Subjects = SubjectList<[Function], ErrorDiag>;
+  let Subjects = SubjectList<[Function, GlobalVar], ErrorDiag,
+        "ExpectedFunctionOrGlobalVar">;
   let Documentation = [NoSanitizeAddressDocs, NoSanitizeThreadDocs,
                        NoSanitizeMemoryDocs];
   let ASTNode = 0;

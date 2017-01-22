@@ -24,6 +24,7 @@
 #include "clang/Basic/Sanitizers.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/VersionTuple.h"
+#include "llvm/ADT/PointerEmbeddedInt.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -55,21 +56,20 @@ protected:
   unsigned IsLateParsed : 1;
   unsigned DuplicatesAllowed : 1;
 
-  void *operator new(size_t bytes) LLVM_NOEXCEPT {
+  void *operator new(size_t bytes) noexcept {
     llvm_unreachable("Attrs cannot be allocated with regular 'new'.");
   }
-  void operator delete(void *data) LLVM_NOEXCEPT {
+  void operator delete(void *data) noexcept {
     llvm_unreachable("Attrs cannot be released with regular 'delete'.");
   }
 
 public:
   // Forward so that the regular new and delete do not hide global ones.
   void *operator new(size_t Bytes, ASTContext &C,
-                     size_t Alignment = 8) LLVM_NOEXCEPT {
+                     size_t Alignment = 8) noexcept {
     return ::operator new(Bytes, C, Alignment);
   }
-  void operator delete(void *Ptr, ASTContext &C,
-                       size_t Alignment) LLVM_NOEXCEPT {
+  void operator delete(void *Ptr, ASTContext &C, size_t Alignment) noexcept {
     return ::operator delete(Ptr, C, Alignment);
   }
 

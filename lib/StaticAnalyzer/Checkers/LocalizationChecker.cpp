@@ -123,10 +123,10 @@ public:
         assert(NonLocalizedString);
   }
 
-  PathDiagnosticPiece *VisitNode(const ExplodedNode *Succ,
-                                 const ExplodedNode *Pred,
-                                 BugReporterContext &BRC,
-                                 BugReport &BR) override;
+  std::shared_ptr<PathDiagnosticPiece> VisitNode(const ExplodedNode *Succ,
+                                                 const ExplodedNode *Pred,
+                                                 BugReporterContext &BRC,
+                                                 BugReport &BR) override;
 
   void Profile(llvm::FoldingSetNodeID &ID) const override {
     ID.Add(NonLocalizedString);
@@ -910,7 +910,7 @@ void NonLocalizedStringChecker::checkPostStmt(const ObjCStringLiteral *SL,
   setNonLocalizedState(sv, C);
 }
 
-PathDiagnosticPiece *
+std::shared_ptr<PathDiagnosticPiece>
 NonLocalizedStringBRVisitor::VisitNode(const ExplodedNode *Succ,
                                        const ExplodedNode *Pred,
                                        BugReporterContext &BRC, BugReport &BR) {
@@ -938,11 +938,11 @@ NonLocalizedStringBRVisitor::VisitNode(const ExplodedNode *Succ,
   if (!L.isValid() || !L.asLocation().isValid())
     return nullptr;
 
-  auto *Piece = new PathDiagnosticEventPiece(L,
-      "Non-localized string literal here");
+  auto Piece = std::make_shared<PathDiagnosticEventPiece>(
+      L, "Non-localized string literal here");
   Piece->addRange(LiteralExpr->getSourceRange());
 
-  return Piece;
+  return std::move(Piece);
 }
 
 namespace {
@@ -1016,6 +1016,8 @@ void EmptyLocalizationContextChecker::checkASTDecl(
 void EmptyLocalizationContextChecker::MethodCrawler::VisitObjCMessageExpr(
     const ObjCMessageExpr *ME) {
 
+  // FIXME: We may be able to use PPCallbacks to check for empy context
+  // comments as part of preprocessing and avoid this re-lexing hack.
   const ObjCInterfaceDecl *OD = ME->getReceiverInterface();
   if (!OD)
     return;
@@ -1050,7 +1052,12 @@ void EmptyLocalizationContextChecker::MethodCrawler::VisitObjCMessageExpr(
     SE = Mgr.getSourceManager().getSLocEntry(SLInfo.first);
   }
 
-  llvm::MemoryBuffer *BF = SE.getFile().getContentCache()->getRawBuffer();
+  bool Invalid = false;
+  llvm::MemoryBuffer *BF =
+      Mgr.getSourceManager().getBuffer(SLInfo.first, SL, &Invalid);
+  if (Invalid)
+    return;
+
   Lexer TheLexer(SL, LangOptions(), BF->getBufferStart(),
                  BF->getBufferStart() + SLInfo.second, BF->getBufferEnd());
 

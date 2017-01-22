@@ -96,6 +96,8 @@ def err_module_lock_timeout : Error<
   "timed out waiting to acquire lock file for module '%0'">, DefaultFatal;
 def err_module_cycle : Error<"cyclic dependency in module '%0': %1">, 
   DefaultFatal;
+def err_module_prebuilt : Error<
+  "error in loading module '%0' from prebuilt module path">, DefaultFatal;
 def note_pragma_entered_here : Note<"#pragma entered here">;  
 def note_decl_hiding_tag_type : Note<
   "%1 %0 is hidden by a non-type declaration of %0 here">;
@@ -161,6 +163,8 @@ def ext_old_implicitly_unsigned_long_cxx : ExtWarn<
   InGroup<CXX11Compat>;
 def ext_clang_enable_if : Extension<"'enable_if' is a clang extension">,
                           InGroup<GccCompat>;
+def ext_clang_diagnose_if : Extension<"'diagnose_if' is a clang extension">,
+                            InGroup<GccCompat>;
 
 // SEH
 def err_seh_expected_handler : Error<
@@ -190,6 +194,8 @@ def err_target_unsupported_fpmath : Error<
     "the '%0' unit is not supported with this instruction set">;
 def err_target_unsupported_unaligned : Error<
   "the %0 sub-architecture does not support unaligned accesses">;
+def err_target_unsupported_execute_only : Error<
+  "execute only is not supported for the %0 sub-architecture">;
 def err_opt_not_valid_with_opt : Error<
   "option '%0' cannot be specified with '%1'">;
 
@@ -220,7 +226,7 @@ def err_arcmt_nsinvocation_ownership : Error<"NSInvocation's %0 is not safe to b
 
 // API notes
 def err_apinotes_message : Error<"%0">;
-def warn_apinotes_message : Warning<"%0">;
+def warn_apinotes_message : Warning<"%0">, InGroup<DiagGroup<"apinotes">>;
 def note_apinotes_message : Note<"%0">;
 
 // OpenMP

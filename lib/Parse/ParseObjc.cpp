@@ -346,9 +346,11 @@ Decl *Parser::ParseObjCAtInterfaceDeclaration(SourceLocation AtLoc,
           protocols, protocolLocs, EndProtoLoc,
           /*consumeLastToken=*/true,
           /*warnOnIncompleteProtocols=*/true);
+      if (Tok.is(tok::eof))
+        return nullptr;
     }
   }
-  
+
   // Next, we need to check for any protocol references.
   if (LAngleLoc.isValid()) {
     if (!ProtocolIdents.empty()) {
@@ -369,7 +371,8 @@ Decl *Parser::ParseObjCAtInterfaceDeclaration(SourceLocation AtLoc,
   }
 
   if (Tok.isNot(tok::less))
-    Actions.ActOnTypedefedProtocols(protocols, superClassId, superClassLoc);
+    Actions.ActOnTypedefedProtocols(protocols, protocolLocs,
+                                    superClassId, superClassLoc);
   
   Decl *ClsType =
     Actions.ActOnStartClassInterface(getCurScope(), AtLoc, nameId, nameLoc, 
@@ -1036,7 +1039,7 @@ IdentifierInfo *Parser::ParseObjCSelectorPiece(SourceLocation &SelectorLoc) {
   case tok::caretequal: {
     std::string ThisTok(PP.getSpelling(Tok));
     if (isLetter(ThisTok[0])) {
-      IdentifierInfo *II = &PP.getIdentifierTable().get(ThisTok.data());
+      IdentifierInfo *II = &PP.getIdentifierTable().get(ThisTok);
       Tok.setKind(tok::identifier);
       SelectorLoc = ConsumeToken();
       return II;
@@ -1816,6 +1819,8 @@ void Parser::parseObjCTypeArgsAndProtocolQualifiers(
                                         protocolRAngleLoc,
                                         consumeLastToken,
                                         /*warnOnIncompleteProtocols=*/false);
+  if (Tok.is(tok::eof)) // Nothing else to do here...
+    return;
 
   // An Objective-C object pointer followed by type arguments
   // can then be followed again by a set of protocol references, e.g.,
@@ -1863,6 +1868,9 @@ TypeResult Parser::parseObjCTypeArgsAndProtocolQualifiers(
                                          typeArgsRAngleLoc, protocolLAngleLoc,
                                          protocols, protocolLocs,
                                          protocolRAngleLoc, consumeLastToken);
+
+  if (Tok.is(tok::eof))
+    return true; // Invalid type result.
 
   // Compute the location of the last token.
   if (consumeLastToken)
@@ -2240,7 +2248,6 @@ Parser::ParseObjCAtImplementationDeclaration(SourceLocation AtLoc) {
     while (!ObjCImplParsing.isFinished() && !isEofOrEom()) {
       ParsedAttributesWithRange attrs(AttrFactory);
       MaybeParseCXX11Attributes(attrs);
-      MaybeParseMicrosoftAttributes(attrs);
       if (DeclGroupPtrTy DGP = ParseExternalDeclaration(attrs)) {
         DeclGroupRef DG = DGP.get();
         DeclsInGroup.append(DG.begin(), DG.end());
@@ -2768,6 +2775,7 @@ StmtResult Parser::ParseObjCAtStatement(SourceLocation AtLoc) {
     return Actions.ActOnNullStmt(Tok.getLocation());
   }
 
+  ExprStatementTokLoc = AtLoc;
   ExprResult Res(ParseExpressionWithLeadingAt(AtLoc));
   if (Res.isInvalid()) {
     // If the expression is invalid, skip ahead to the next semicolon. Not
@@ -2864,7 +2872,11 @@ ExprResult Parser::ParseObjCAtExpression(SourceLocation AtLoc) {
       return ParseAvailabilityCheckExpr(AtLoc);
       default: {
         const char *str = nullptr;
-        if (GetLookAheadToken(1).is(tok::l_brace)) {
+        // Only provide the @try/@finally/@autoreleasepool fixit when we're sure
+        // that this is a proper statement where such directives could actually
+        // occur.
+        if (GetLookAheadToken(1).is(tok::l_brace) &&
+            ExprStatementTokLoc == AtLoc) {
           char ch = Tok.getIdentifierInfo()->getNameStart()[0];
           str =  
             ch == 't' ? "try" 

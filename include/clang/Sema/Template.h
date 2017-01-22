@@ -410,6 +410,7 @@ namespace clang {
 #define OBJCCONTAINER(DERIVED, BASE)
 #define FILESCOPEASM(DERIVED, BASE)
 #define IMPORT(DERIVED, BASE)
+#define EXPORT(DERIVED, BASE)
 #define LINKAGESPEC(DERIVED, BASE)
 #define OBJCCOMPATIBLEALIAS(DERIVED, BASE)
 #define OBJCMETHOD(DERIVED, BASE)
@@ -514,6 +515,11 @@ namespace clang {
         VarTemplateDecl *VarTemplate,
         VarTemplatePartialSpecializationDecl *PartialSpec);
     void InstantiateEnumDefinition(EnumDecl *Enum, EnumDecl *Pattern);
+
+  private:
+    template<typename T>
+    Decl *instantiateUnresolvedUsingDecl(T *D,
+                                         bool InstantiatingPackElement = false);
   };  
 }
 

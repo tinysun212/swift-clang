@@ -9,14 +9,15 @@ set(CLANG_BOOTSTRAP_TARGETS
   stage2
   stage2-distribution
   stage2-install-distribution
+  stage2-install-distribution-toolchain
   stage2-check-all
   stage2-check-llvm
   stage2-check-clang
   stage2-test-suite CACHE STRING "")
 
 if(PGO_INSTRUMENT_LTO)
-  set(BOOTSTRAP_LLVM_ENABLE_LTO ON CACHE BOOL "")
-  set(BOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_LTO ON CACHE BOOL "")
+  set(BOOTSTRAP_LLVM_ENABLE_LTO ${PGO_INSTRUMENT_LTO} CACHE BOOL "")
+  set(BOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_LTO ${PGO_INSTRUMENT_LTO} CACHE BOOL "")
 endif()
 
 if(PGO_BUILD_CONFIGURATION)

@@ -74,7 +74,8 @@ class Parser : public CodeCompletionHandler {
   // a statement).
   SourceLocation PrevTokLocation;
 
-  unsigned short ParenCount, BracketCount, BraceCount;
+  unsigned short ParenCount = 0, BracketCount = 0, BraceCount = 0;
+  unsigned short MisplacedModuleBeginCount = 0;
 
   /// Actions - These are the callbacks we invoke as we parse various constructs
   /// in the file.
@@ -172,6 +173,8 @@ class Parser : public CodeCompletionHandler {
   std::unique_ptr<PragmaHandler> MSCodeSeg;
   std::unique_ptr<PragmaHandler> MSSection;
   std::unique_ptr<PragmaHandler> MSRuntimeChecks;
+  std::unique_ptr<PragmaHandler> MSIntrinsic;
+  std::unique_ptr<PragmaHandler> CUDAForceHostDeviceHandler;
   std::unique_ptr<PragmaHandler> OptimizeHandler;
   std::unique_ptr<PragmaHandler> LoopHintHandler;
   std::unique_ptr<PragmaHandler> UnrollHintHandler;
@@ -245,6 +248,11 @@ class Parser : public CodeCompletionHandler {
 
   bool SkipFunctionBodies;
 
+  /// The location of the expression statement that is being parsed right now.
+  /// Used to determine if an expression that is being parsed is a statement or
+  /// just a regular sub-expression.
+  SourceLocation ExprStatementTokLoc;
+
 public:
   Parser(Preprocessor &PP, Sema &Actions, bool SkipFunctionBodies);
   ~Parser() override;
@@ -277,6 +285,9 @@ public:
   /// Initialize - Warm up the parser.
   ///
   void Initialize();
+
+  /// Parse the first top-level declaration in a translation unit.
+  bool ParseFirstTopLevelDecl(DeclGroupPtrTy &Result);
 
   /// ParseTopLevelDecl - Parse one top-level declaration. Returns true if
   /// the EOF was encountered.
@@ -589,11 +600,8 @@ private:
 public:
   // If NeedType is true, then TryAnnotateTypeOrScopeToken will try harder to
   // find a type name by attempting typo correction.
-  bool TryAnnotateTypeOrScopeToken(bool EnteringContext = false,
-                                   bool NeedType = false);
-  bool TryAnnotateTypeOrScopeTokenAfterScopeSpec(bool EnteringContext,
-                                                 bool NeedType,
-                                                 CXXScopeSpec &SS,
+  bool TryAnnotateTypeOrScopeToken();
+  bool TryAnnotateTypeOrScopeTokenAfterScopeSpec(CXXScopeSpec &SS,
                                                  bool IsNewScope);
   bool TryAnnotateCXXScopeToken(bool EnteringContext = false);
 
@@ -873,8 +881,8 @@ public:
     StopAtCodeCompletion = 1 << 2 ///< Stop at code completion
   };
 
-  friend LLVM_CONSTEXPR SkipUntilFlags operator|(SkipUntilFlags L,
-                                                 SkipUntilFlags R) {
+  friend constexpr SkipUntilFlags operator|(SkipUntilFlags L,
+                                            SkipUntilFlags R) {
     return static_cast<SkipUntilFlags>(static_cast<unsigned>(L) |
                                        static_cast<unsigned>(R));
   }
@@ -1007,8 +1015,8 @@ private:
   /// (C++ [class.mem]p2).
   struct LateParsedDefaultArgument {
     explicit LateParsedDefaultArgument(Decl *P,
-                                       CachedTokens *Toks = nullptr)
-      : Param(P), Toks(Toks) { }
+                                       std::unique_ptr<CachedTokens> Toks = nullptr)
+      : Param(P), Toks(std::move(Toks)) { }
 
     /// Param - The parameter declaration for this parameter.
     Decl *Param;
@@ -1017,7 +1025,7 @@ private:
     /// argument expression, not including the '=' or the terminating
     /// ')' or ','. This will be NULL for parameters that have no
     /// default argument.
-    CachedTokens *Toks;
+    std::unique_ptr<CachedTokens> Toks;
   };
 
   /// LateParsedMethodDeclaration - A method declaration inside a class that
@@ -1249,6 +1257,11 @@ private:
   struct ParsedAttributesWithRange : ParsedAttributes {
     ParsedAttributesWithRange(AttributeFactory &factory)
       : ParsedAttributes(factory) {}
+
+    void clear() {
+      ParsedAttributes::clear();
+      Range = SourceRange();
+    }
 
     SourceRange Range;
   };
@@ -1518,8 +1531,6 @@ private:
                                       bool *MayBePseudoDestructor = nullptr,
                                       bool IsTypename = false,
                                       IdentifierInfo **LastII = nullptr);
-
-  void CheckForLParenAfterColonColon();
 
   //===--------------------------------------------------------------------===//
   // C++0x 5.1.2: Lambda expressions
@@ -2103,8 +2114,8 @@ private:
   void DiagnoseMisplacedCXX11Attribute(ParsedAttributesWithRange &Attrs,
                                        SourceLocation CorrectLocation);
 
-  void handleDeclspecAlignBeforeClassKey(ParsedAttributesWithRange &Attrs,
-                                         DeclSpec &DS, Sema::TagUseKind TUK);
+  void stripTypeAttributesOffDeclSpec(ParsedAttributesWithRange &Attrs,
+                                      DeclSpec &DS, Sema::TagUseKind TUK);
 
   void ProhibitAttributes(ParsedAttributesWithRange &attrs) {
     if (!attrs.Range.isValid()) return;
@@ -2116,7 +2127,8 @@ private:
   // Forbid C++11 attributes that appear on certain syntactic 
   // locations which standard permits but we don't supported yet, 
   // for example, attributes appertain to decl specifiers.
-  void ProhibitCXX11Attributes(ParsedAttributesWithRange &attrs);
+  void ProhibitCXX11Attributes(ParsedAttributesWithRange &Attrs,
+                               unsigned DiagID);
 
   /// \brief Skip C++11 attributes and return the end location of the last one.
   /// \returns SourceLocation() if there are no attributes.
@@ -2208,6 +2220,7 @@ private:
     if (getLangOpts().MicrosoftExt && Tok.is(tok::l_square))
       ParseMicrosoftAttributes(attrs, endLoc);
   }
+  void ParseMicrosoftUuidAttributeArgs(ParsedAttributes &Attrs);
   void ParseMicrosoftAttributes(ParsedAttributes &attrs,
                                 SourceLocation *endLoc = nullptr);
   void MaybeParseMicrosoftDeclSpecs(ParsedAttributes &Attrs,
@@ -2414,21 +2427,40 @@ private:
                            ParsedAttributes& attrs,
                            BalancedDelimiterTracker &Tracker);
   Decl *ParseLinkage(ParsingDeclSpec &DS, unsigned Context);
-  Decl *ParseUsingDirectiveOrDeclaration(unsigned Context,
-                                         const ParsedTemplateInfo &TemplateInfo,
-                                         SourceLocation &DeclEnd,
-                                         ParsedAttributesWithRange &attrs,
-                                         Decl **OwnedType = nullptr);
+  Decl *ParseExportDeclaration();
+  DeclGroupPtrTy ParseUsingDirectiveOrDeclaration(
+      unsigned Context, const ParsedTemplateInfo &TemplateInfo,
+      SourceLocation &DeclEnd, ParsedAttributesWithRange &attrs);
   Decl *ParseUsingDirective(unsigned Context,
                             SourceLocation UsingLoc,
                             SourceLocation &DeclEnd,
                             ParsedAttributes &attrs);
-  Decl *ParseUsingDeclaration(unsigned Context,
-                              const ParsedTemplateInfo &TemplateInfo,
-                              SourceLocation UsingLoc,
-                              SourceLocation &DeclEnd,
-                              AccessSpecifier AS = AS_none,
-                              Decl **OwnedType = nullptr);
+
+  struct UsingDeclarator {
+    SourceLocation TypenameLoc;
+    CXXScopeSpec SS;
+    SourceLocation TemplateKWLoc;
+    UnqualifiedId Name;
+    SourceLocation EllipsisLoc;
+
+    void clear() {
+      TypenameLoc = TemplateKWLoc = EllipsisLoc = SourceLocation();
+      SS.clear();
+      Name.clear();
+    }
+  };
+
+  bool ParseUsingDeclarator(unsigned Context, UsingDeclarator &D);
+  DeclGroupPtrTy ParseUsingDeclaration(unsigned Context,
+                                       const ParsedTemplateInfo &TemplateInfo,
+                                       SourceLocation UsingLoc,
+                                       SourceLocation &DeclEnd,
+                                       AccessSpecifier AS = AS_none);
+  Decl *ParseAliasDeclarationAfterDeclarator(
+      const ParsedTemplateInfo &TemplateInfo, SourceLocation UsingLoc,
+      UsingDeclarator &D, SourceLocation &DeclEnd, AccessSpecifier AS,
+      ParsedAttributes &Attrs, Decl **OwnedType = nullptr);
+
   Decl *ParseStaticAssertDeclaration(SourceLocation &DeclEnd);
   Decl *ParseNamespaceAlias(SourceLocation NamespaceLoc,
                             SourceLocation AliasLoc, IdentifierInfo *Alias,
@@ -2663,6 +2695,7 @@ private:
 
   //===--------------------------------------------------------------------===//
   // Modules
+  DeclGroupPtrTy ParseModuleDecl();
   DeclGroupPtrTy ParseModuleImport(SourceLocation AtLoc);
   bool parseMisplacedModuleImport();
   bool tryParseMisplacedModuleImport() {
@@ -2673,10 +2706,27 @@ private:
     return false;
   }
 
+  bool ParseModuleName(
+      SourceLocation UseLoc,
+      SmallVectorImpl<std::pair<IdentifierInfo *, SourceLocation>> &Path,
+      bool IsImport);
+
   //===--------------------------------------------------------------------===//
   // C++11/G++: Type Traits [Type-Traits.html in the GCC manual]
   ExprResult ParseTypeTrait();
-  
+
+  /// Parse the given string as a type.
+  ///
+  /// This is a dangerous utility function currently employed only by API notes.
+  /// It is not a general entry-point for safely parsing types from strings.
+  ///
+  /// \param typeStr The string to be parsed as a type.
+  /// \param context The name of the context in which this string is being
+  /// parsed, which will be used in diagnostics.
+  /// \param includeLoc The location at which this parse was triggered.
+  TypeResult parseTypeFromString(StringRef typeStr, StringRef context,
+                                 SourceLocation includeLoc);
+
   //===--------------------------------------------------------------------===//
   // Embarcadero: Arary and Expression Traits
   ExprResult ParseArrayTypeTrait();

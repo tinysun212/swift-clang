@@ -17,14 +17,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Basic/IdentifierTable.h"
+#include "clang/Basic/SourceLocation.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
+#include "clang/Basic/TokenKinds.h"
 #include "clang/Lex/CodeCompletionHandler.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/LiteralSupport.h"
 #include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/Token.h"
 #include "llvm/ADT/APSInt.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/SaveAndRestore.h"
+#include <cassert>
+
 using namespace clang;
 
 namespace {
@@ -34,6 +44,7 @@ namespace {
 class PPValue {
   SourceRange Range;
   IdentifierInfo *II;
+
 public:
   llvm::APSInt Val;
 
@@ -58,7 +69,7 @@ public:
   void setEnd(SourceLocation L) { Range.setEnd(L); }
 };
 
-}
+} // end anonymous namespace
 
 static bool EvaluateDirectiveSubExpr(PPValue &LHS, unsigned MinPrec,
                                      Token &PeekTok, bool ValueLive,
@@ -146,51 +157,6 @@ static bool EvaluateDefined(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
     PP.LexNonComment(PeekTok);
   }
 
-  // [cpp.cond]p4:
-  //   Prior to evaluation, macro invocations in the list of preprocessing
-  //   tokens that will become the controlling constant expression are replaced
-  //   (except for those macro names modified by the 'defined' unary operator),
-  //   just as in normal text. If the token 'defined' is generated as a result
-  //   of this replacement process or use of the 'defined' unary operator does
-  //   not match one of the two specified forms prior to macro replacement, the
-  //   behavior is undefined.
-  // This isn't an idle threat, consider this program:
-  //   #define FOO
-  //   #define BAR defined(FOO)
-  //   #if BAR
-  //   ...
-  //   #else
-  //   ...
-  //   #endif
-  // clang and gcc will pick the #if branch while Visual Studio will take the
-  // #else branch.  Emit a warning about this undefined behavior.
-  if (beginLoc.isMacroID()) {
-    bool IsFunctionTypeMacro =
-        PP.getSourceManager()
-            .getSLocEntry(PP.getSourceManager().getFileID(beginLoc))
-            .getExpansion()
-            .isFunctionMacroExpansion();
-    // For object-type macros, it's easy to replace
-    //   #define FOO defined(BAR)
-    // with
-    //   #if defined(BAR)
-    //   #define FOO 1
-    //   #else
-    //   #define FOO 0
-    //   #endif
-    // and doing so makes sense since compilers handle this differently in
-    // practice (see example further up).  But for function-type macros,
-    // there is no good way to write
-    //   # define FOO(x) (defined(M_ ## x) && M_ ## x)
-    // in a different way, and compilers seem to agree on how to behave here.
-    // So warn by default on object-type macros, but only warn in -pedantic
-    // mode on function-type macros.
-    if (IsFunctionTypeMacro)
-      PP.Diag(beginLoc, diag::warn_defined_in_function_type_macro);
-    else
-      PP.Diag(beginLoc, diag::warn_defined_in_object_type_macro);
-  }
-
   // Invoke the 'defined' callback.
   if (PPCallbacks *Callbacks = PP.getPPCallbacks()) {
     Callbacks->Defined(macroToken, Macro,
@@ -230,8 +196,8 @@ static bool EvaluateValue(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
   if (IdentifierInfo *II = PeekTok.getIdentifierInfo()) {
     // Handle "defined X" and "defined(X)".
     if (II->isStr("defined"))
-      return EvaluateDefined(Result, PeekTok, DT, ValueLive, PP);
-
+      return(EvaluateDefined(Result, PeekTok, DT, ValueLive, PP));
+    
     // If this identifier isn't 'defined' or one of the special
     // preprocessor keywords and it wasn't macro expanded, it turns
     // into a simple 0, unless it is the C++ keyword "true", in which case it
@@ -469,8 +435,6 @@ static bool EvaluateValue(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
   }
 }
 
-
-
 /// getPrecedence - Return the precedence of the specified binary operator
 /// token.  This returns:
 ///   ~0 - Invalid token.
@@ -531,7 +495,7 @@ static bool EvaluateDirectiveSubExpr(PPValue &LHS, unsigned MinPrec,
     return true;
   }
 
-  while (1) {
+  while (true) {
     // If this token has a lower precedence than we are allowed to parse, return
     // it so that higher levels of the recursion can parse it.
     if (PeekPrec < MinPrec)

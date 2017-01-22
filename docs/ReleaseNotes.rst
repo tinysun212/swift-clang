@@ -11,8 +11,8 @@ Written by the `LLVM Team <http://llvm.org/>`_
 .. warning::
 
    These are in-progress notes for the upcoming Clang 4.0.0 release. You may
-   prefer the `Clang 3.8 Release Notes
-   <http://llvm.org/releases/3.8.0/tools/clang/docs/ReleaseNotes.html>`_.
+   prefer the `Clang 3.9 Release Notes
+   <http://llvm.org/releases/3.9.0/tools/clang/docs/ReleaseNotes.html>`_.
 
 Introduction
 ============
@@ -31,11 +31,6 @@ the latest release, please check out the main please see the `Clang Web
 Site <http://clang.llvm.org>`_ or the `LLVM Web
 Site <http://llvm.org>`_.
 
-Note that if you are reading this file from a Subversion checkout or the
-main Clang web page, this document applies to the *next* release, not
-the current one. To see the release notes for a specific release, please
-see the `releases page <http://llvm.org/releases/>`_.
-
 What's New in Clang 4.0.0?
 ==========================
 
@@ -47,7 +42,38 @@ sections with improvements to Clang's support for those languages.
 Major New Features
 ------------------
 
+- The ``diagnose_if`` attribute has been added to clang. This attribute allows
+  clang to emit a warning or error if a function call meets one or more
+  user-specified conditions.
+
+- Enhanced devirtualization with
+  `-fstrict-vtable-pointers <UsersManual.html#cmdoption-fstrict-vtable-pointers>`_.
+  Clang devirtualizes across different basic blocks, like loops:
+
+  .. code-block:: c++
+
+       struct A {
+           virtual void foo();
+       };
+       void indirect(A &a, int n) {
+           for (int i = 0 ; i < n; i++)
+               a.foo();
+       }
+       void test(int n) {
+           A a;
+           indirect(a, n);
+       }
+
+
 -  ...
+
+Improvements to ThinLTO (-flto=thin)
+------------------------------------
+- Integration with profile data (PGO). When available, profile data enables
+  more accurate function importing decisions, as well as cross-module indirect
+  call promotion.
+- Significant build-time and binary-size improvements when compiling with debug
+  info (-g).
 
 Improvements to Clang's diagnostics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -57,8 +83,14 @@ Improvements to Clang's diagnostics
 New Compiler Flags
 ------------------
 
-The option ....
+The option -Og has been added to optimize the debugging experience.
+For now, this option is exactly the same as -O1. However, in the future,
+some other optimizations might be enabled or disabled.
 
+The option -MJ has been added to simplify adding JSON compilation
+database output into existing build systems.
+
+The option ....
 
 New Pragmas in Clang
 -----------------------
@@ -117,7 +149,7 @@ OpenMP Support in Clang
 Internal API Changes
 --------------------
 
-These are major API changes that have happened since the 3.8 release of
+These are major API changes that have happened since the 3.9 release of
 Clang. If upgrading an external codebase that uses Clang as a library,
 this section should help get you past the largest hurdles of upgrading.
 

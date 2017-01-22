@@ -70,7 +70,7 @@ class TargetInfo;
 /// and a long form that takes explicit instances of any required objects.
 class CompilerInstance : public ModuleLoader {
   /// The options used in this compiler instance.
-  IntrusiveRefCntPtr<CompilerInvocation> Invocation;
+  std::shared_ptr<CompilerInvocation> Invocation;
 
   /// The diagnostics engine instance.
   IntrusiveRefCntPtr<DiagnosticsEngine> Diagnostics;
@@ -91,10 +91,13 @@ class CompilerInstance : public ModuleLoader {
   IntrusiveRefCntPtr<SourceManager> SourceMgr;
 
   /// The preprocessor.
-  IntrusiveRefCntPtr<Preprocessor> PP;
+  std::shared_ptr<Preprocessor> PP;
 
   /// The AST context.
   IntrusiveRefCntPtr<ASTContext> Context;
+
+  /// An optional sema source that will be attached to sema.
+  IntrusiveRefCntPtr<ExternalSemaSource> ExternalSemaSrc;
 
   /// The AST consumer.
   std::unique_ptr<ASTConsumer> Consumer;
@@ -225,7 +228,7 @@ public:
   }
 
   /// setInvocation - Replace the current invocation.
-  void setInvocation(CompilerInvocation *Value);
+  void setInvocation(std::shared_ptr<CompilerInvocation> Value);
 
   /// \brief Indicates whether we should (re)build the global module index.
   bool shouldBuildGlobalModuleIndex() const;
@@ -284,6 +287,9 @@ public:
   }
   const HeaderSearchOptions &getHeaderSearchOpts() const {
     return Invocation->getHeaderSearchOpts();
+  }
+  std::shared_ptr<HeaderSearchOptions> getHeaderSearchOptsPtr() const {
+    return Invocation->getHeaderSearchOptsPtr();
   }
 
   APINotesOptions &getAPINotesOpts() {
@@ -437,13 +443,14 @@ public:
     return *PP;
   }
 
+  std::shared_ptr<Preprocessor> getPreprocessorPtr() { return PP; }
+
   void resetAndLeakPreprocessor() {
-    BuryPointer(PP.get());
-    PP.resetWithoutRelease();
+    BuryPointer(new std::shared_ptr<Preprocessor>(PP));
   }
 
   /// Replace the current preprocessor.
-  void setPreprocessor(Preprocessor *Value);
+  void setPreprocessor(std::shared_ptr<Preprocessor> Value);
 
   /// }
   /// @name ASTContext
@@ -657,7 +664,7 @@ public:
       StringRef Path, StringRef Sysroot, bool DisablePCHValidation,
       bool AllowPCHWithCompilerErrors, Preprocessor &PP, ASTContext &Context,
       const PCHContainerReader &PCHContainerRdr,
-      ArrayRef<IntrusiveRefCntPtr<ModuleFileExtension>> Extensions,
+      ArrayRef<std::shared_ptr<ModuleFileExtension>> Extensions,
       void *DeserializationListener, bool OwnDeserializationListener,
       bool Preamble, bool UseGlobalModuleIndex);
 
@@ -781,6 +788,8 @@ public:
   void addDependencyCollector(std::shared_ptr<DependencyCollector> Listener) {
     DependencyCollectors.push_back(std::move(Listener));
   }
+
+  void setExternalSemaSource(IntrusiveRefCntPtr<ExternalSemaSource> ESS);
 };
 
 } // end namespace clang

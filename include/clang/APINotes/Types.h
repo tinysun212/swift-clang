@@ -70,19 +70,42 @@ public:
   /// Whether this entity is marked unavailable in Swift.
   unsigned UnavailableInSwift : 1;
 
+private:
+  /// Whether SwiftPrivate was specified.
+  unsigned SwiftPrivateSpecified : 1;
+
   /// Whether this entity is considered "private" to a Swift overlay.
   unsigned SwiftPrivate : 1;
 
+public:
   /// Swift name of this entity.
   std::string SwiftName;
 
-  CommonEntityInfo() : Unavailable(0), UnavailableInSwift(0), SwiftPrivate(0) { }
+  CommonEntityInfo()
+    : Unavailable(0), UnavailableInSwift(0), SwiftPrivateSpecified(0),
+      SwiftPrivate(0) { }
+
+  Optional<bool> isSwiftPrivate() const {
+    if (!SwiftPrivateSpecified) return None;
+    return SwiftPrivate;
+  }
+
+  void setSwiftPrivate(Optional<bool> swiftPrivate) {
+    if (swiftPrivate) {
+      SwiftPrivateSpecified = 1;
+      SwiftPrivate = *swiftPrivate;
+    } else {
+      SwiftPrivateSpecified = 0;
+      SwiftPrivate = 0;
+    }
+  }
 
   friend bool operator==(const CommonEntityInfo &lhs,
                          const CommonEntityInfo &rhs) {
     return lhs.UnavailableMsg == rhs.UnavailableMsg &&
            lhs.Unavailable == rhs.Unavailable &&
            lhs.UnavailableInSwift == rhs.UnavailableInSwift &&
+           lhs.SwiftPrivateSpecified == rhs.SwiftPrivateSpecified &&
            lhs.SwiftPrivate == rhs.SwiftPrivate &&
            lhs.SwiftName == rhs.SwiftName;
   }
@@ -111,8 +134,10 @@ public:
       }
     }
 
-    if (rhs.SwiftPrivate)
-      lhs.SwiftPrivate = true;
+    if (rhs.SwiftPrivateSpecified && !lhs.SwiftPrivateSpecified) {
+      lhs.SwiftPrivateSpecified = 1;
+      lhs.SwiftPrivate = rhs.SwiftPrivate;
+    }
 
     if (rhs.SwiftName.length() != 0 &&
         lhs.SwiftName.length() == 0)
@@ -127,26 +152,48 @@ class CommonTypeInfo : public CommonEntityInfo {
   /// The Swift type to which a given type is bridged.
   ///
   /// Reflects the swift_bridge attribute.
-  std::string SwiftBridge;
+  Optional<std::string> SwiftBridge;
 
   /// The NS error domain for this type.
-  std::string NSErrorDomain;
+  Optional<std::string> NSErrorDomain;
 
 public:
   CommonTypeInfo() : CommonEntityInfo() { }
 
-  const std::string &getSwiftBridge() const { return SwiftBridge; }
-  void setSwiftBridge(const std::string &swiftType) { SwiftBridge = swiftType; }
+  const Optional<std::string> &getSwiftBridge() const { return SwiftBridge; }
 
-  const std::string &getNSErrorDomain() const { return NSErrorDomain; }
-  void setNSErrorDomain(const std::string &domain) { NSErrorDomain = domain; }
+  void setSwiftBridge(const Optional<std::string> &swiftType) {
+    SwiftBridge = swiftType;
+  }
+
+  void setSwiftBridge(const Optional<StringRef> &swiftType) {
+    if (swiftType)
+      SwiftBridge = *swiftType;
+    else
+      SwiftBridge = None;
+  }
+
+  const Optional<std::string> &getNSErrorDomain() const {
+    return NSErrorDomain;
+  }
+
+  void setNSErrorDomain(const Optional<std::string> &domain) {
+    NSErrorDomain = domain;
+  }
+
+  void setNSErrorDomain(const Optional<StringRef> &domain) {
+    if (domain)
+      NSErrorDomain = *domain;
+    else
+      NSErrorDomain = None;
+  }
 
   friend CommonTypeInfo &operator|=(CommonTypeInfo &lhs,
                                     const CommonTypeInfo &rhs) {
     static_cast<CommonEntityInfo &>(lhs) |= rhs;
-    if (lhs.SwiftBridge.empty() && !rhs.SwiftBridge.empty())
+    if (!lhs.SwiftBridge && rhs.SwiftBridge)
       lhs.SwiftBridge = rhs.SwiftBridge;
-    if (lhs.NSErrorDomain.empty() && !rhs.NSErrorDomain.empty())
+    if (!lhs.NSErrorDomain && rhs.NSErrorDomain)
       lhs.NSErrorDomain = rhs.NSErrorDomain;
     return lhs;
   }
@@ -250,6 +297,9 @@ class VariableInfo : public CommonEntityInfo {
   /// has been audited.
   unsigned Nullable : 2;
 
+  /// The C type of the variable, as a string.
+  std::string Type;
+
 public:
   VariableInfo()
     : CommonEntityInfo(),
@@ -268,10 +318,14 @@ public:
     Nullable = static_cast<unsigned>(kind);
   }
 
+  const std::string &getType() const { return Type; }
+  void setType(const std::string &type) { Type = type; }
+
   friend bool operator==(const VariableInfo &lhs, const VariableInfo &rhs) {
     return static_cast<const CommonEntityInfo &>(lhs) == rhs &&
            lhs.NullabilityAudited == rhs.NullabilityAudited &&
-           lhs.Nullable == rhs.Nullable;
+           lhs.Nullable == rhs.Nullable &&
+           lhs.Type == rhs.Type;
   }
 
   friend bool operator!=(const VariableInfo &lhs, const VariableInfo &rhs) {
@@ -283,18 +337,27 @@ public:
     static_cast<CommonEntityInfo &>(lhs) |= rhs;
     if (!lhs.NullabilityAudited && rhs.NullabilityAudited)
       lhs.setNullabilityAudited(*rhs.getNullability());
+    if (lhs.Type.empty() && !rhs.Type.empty())
+      lhs.Type = rhs.Type;
     return lhs;
   }
 };
 
 /// Describes API notes data for an Objective-C property.
 class ObjCPropertyInfo : public VariableInfo {
+  unsigned SwiftImportAsAccessorsSpecified : 1;
+  unsigned SwiftImportAsAccessors : 1;
+
 public:
-  ObjCPropertyInfo() : VariableInfo() { }
+  ObjCPropertyInfo()
+      : VariableInfo(), SwiftImportAsAccessorsSpecified(false),
+        SwiftImportAsAccessors(false) {}
 
   /// Merge class-wide information into the given property.
   friend ObjCPropertyInfo &operator|=(ObjCPropertyInfo &lhs,
                                       const ObjCContextInfo &rhs) {
+    static_cast<VariableInfo &>(lhs) |= rhs;
+
     // Merge nullability.
     if (!lhs.getNullability()) {
       if (auto nullable = rhs.getDefaultNullability()) {
@@ -304,28 +367,71 @@ public:
 
     return lhs;
   }
+
+  Optional<bool> getSwiftImportAsAccessors() const {
+    if (SwiftImportAsAccessorsSpecified)
+      return SwiftImportAsAccessors;
+    return None;
+  }
+  void setSwiftImportAsAccessors(Optional<bool> value) {
+    if (value.hasValue()) {
+      SwiftImportAsAccessorsSpecified = true;
+      SwiftImportAsAccessors = value.getValue();
+    } else {
+      SwiftImportAsAccessorsSpecified = false;
+      SwiftImportAsAccessors = false;
+    }
+  }
+
+  friend ObjCPropertyInfo &operator|=(ObjCPropertyInfo &lhs,
+                                      const ObjCPropertyInfo &rhs) {
+    lhs |= static_cast<const VariableInfo &>(rhs);
+    if (!lhs.SwiftImportAsAccessorsSpecified &&
+        rhs.SwiftImportAsAccessorsSpecified) {
+      lhs.SwiftImportAsAccessorsSpecified = true;
+      lhs.SwiftImportAsAccessors = rhs.SwiftImportAsAccessors;
+    }
+    return lhs;
+  }
 };
 
 /// Describes a function or method parameter.
 class ParamInfo : public VariableInfo {
+  /// Whether noescape was specified.
+  unsigned NoEscapeSpecified : 1;
+
   /// Whether the this parameter has the 'noescape' attribute.
   unsigned NoEscape : 1;
 
 public:
-  ParamInfo() : VariableInfo(), NoEscape(false) { }
+  ParamInfo() : VariableInfo(), NoEscapeSpecified(false), NoEscape(false) { }
 
-  bool isNoEscape() const { return NoEscape; }
-  void setNoEscape(bool noescape) { NoEscape = noescape; }
+  Optional<bool> isNoEscape() const {
+    if (!NoEscapeSpecified) return None;
+    return NoEscape;
+  }
+  void setNoEscape(Optional<bool> noescape) {
+    if (noescape) {
+      NoEscapeSpecified = true;
+      NoEscape = *noescape;
+    } else {
+      NoEscapeSpecified = false;
+      NoEscape = false;
+    }
+  }
 
   friend ParamInfo &operator|=(ParamInfo &lhs, const ParamInfo &rhs) {
     static_cast<VariableInfo &>(lhs) |= rhs;
-    if (!lhs.NoEscape && rhs.NoEscape)
-      lhs.NoEscape = true;
+    if (!lhs.NoEscapeSpecified && rhs.NoEscapeSpecified) {
+      lhs.NoEscapeSpecified = true;
+      lhs.NoEscape = rhs.NoEscape;
+    }
     return lhs;
   }
 
   friend bool operator==(const ParamInfo &lhs, const ParamInfo &rhs) {
     return static_cast<const VariableInfo &>(lhs) == rhs &&
+           lhs.NoEscapeSpecified == rhs.NoEscapeSpecified &&
            lhs.NoEscape == rhs.NoEscape;
   }
 
@@ -366,6 +472,9 @@ public:
   //  about the return type is stored at position 0, followed by the nullability
   //  of the parameters.
   uint64_t NullabilityPayload = 0;
+
+  /// The result type of this function, as a C type.
+  std::string ResultType;
 
   /// The function parameters.
   std::vector<ParamInfo> Params;
@@ -430,7 +539,9 @@ public:
     return static_cast<const CommonEntityInfo &>(lhs) == rhs &&
            lhs.NullabilityAudited == rhs.NullabilityAudited &&
            lhs.NumAdjustedNullable == rhs.NumAdjustedNullable &&
-           lhs.NullabilityPayload == rhs.NullabilityPayload;
+           lhs.NullabilityPayload == rhs.NullabilityPayload &&
+           lhs.ResultType == rhs.ResultType &&
+           lhs.Params == rhs.Params;
   }
 
   friend bool operator!=(const FunctionInfo &lhs, const FunctionInfo &rhs) {
@@ -521,9 +632,18 @@ public:
   TagInfo() : CommonTypeInfo() { }
 };
 
+/// The kind of a swift_wrapper/swift_newtype.
+enum class SwiftWrapperKind {
+  None,
+  Struct,
+  Enum
+};
+
 /// Describes API notes data for a typedef.
 class TypedefInfo : public CommonTypeInfo {
 public:
+  Optional<SwiftWrapperKind> SwiftWrapper;
+
   TypedefInfo() : CommonTypeInfo() { }
 };
 
