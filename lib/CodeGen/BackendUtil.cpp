@@ -557,14 +557,14 @@ void EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
           .Default(llvm::FloatABI::Default);
 
   // Set FP fusion mode.
-  switch (CodeGenOpts.getFPContractMode()) {
-  case CodeGenOptions::FPC_Off:
+  switch (LangOpts.getDefaultFPContractMode()) {
+  case LangOptions::FPC_Off:
     Options.AllowFPOpFusion = llvm::FPOpFusion::Strict;
     break;
-  case CodeGenOptions::FPC_On:
+  case LangOptions::FPC_On:
     Options.AllowFPOpFusion = llvm::FPOpFusion::Standard;
     break;
-  case CodeGenOptions::FPC_Fast:
+  case LangOptions::FPC_Fast:
     Options.AllowFPOpFusion = llvm::FPOpFusion::Fast;
     break;
   }
@@ -996,6 +996,7 @@ static const char* getSectionNameForBitcode(const Triple &T) {
     return "__LLVM,__bitcode";
   case Triple::COFF:
   case Triple::ELF:
+  case Triple::Wasm:
   case Triple::UnknownObjectFormat:
     return ".llvmbc";
   }
@@ -1008,6 +1009,7 @@ static const char* getSectionNameForCommandline(const Triple &T) {
     return "__LLVM,__cmdline";
   case Triple::COFF:
   case Triple::ELF:
+  case Triple::Wasm:
   case Triple::UnknownObjectFormat:
     return ".llvmcmd";
   }

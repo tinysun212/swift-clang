@@ -342,7 +342,6 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
   }
 
   // See if this is a deleted function.
-  SmallVector<DiagnoseIfAttr *, 4> DiagnoseIfWarnings;
   if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
     if (FD->isDeleted()) {
       auto *Ctor = dyn_cast<CXXConstructorDecl>(FD);
@@ -365,11 +364,8 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
     if (getLangOpts().CUDA && !CheckCUDACall(Loc, FD))
       return true;
 
-    if (const DiagnoseIfAttr *A =
-            checkArgIndependentDiagnoseIf(FD, DiagnoseIfWarnings)) {
-      emitDiagnoseIfDiagnostic(Loc, A);
+    if (diagnoseArgIndependentDiagnoseIfAttrs(FD, Loc))
       return true;
-    }
   }
 
   // [OpenMP 4.0], 2.15 declare reduction Directive, Restrictions
@@ -384,9 +380,6 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
     Diag(D->getLocation(), diag::note_entity_declared_at) << D;
     return true;
   }
-
-  for (const auto *W : DiagnoseIfWarnings)
-    emitDiagnoseIfDiagnostic(Loc, W);
 
   DiagnoseAvailabilityOfDecl(*this, D, Loc, UnknownObjCClass,
                              ObjCPropertyAccess);
@@ -5189,16 +5182,6 @@ static void checkDirectCallValidity(Sema &S, const Expr *Fn,
         << Attr->getCond()->getSourceRange() << Attr->getMessage();
     return;
   }
-
-  SmallVector<DiagnoseIfAttr *, 4> Nonfatal;
-  if (const DiagnoseIfAttr *Attr = S.checkArgDependentDiagnoseIf(
-          Callee, ArgExprs, Nonfatal, /*MissingImplicitThis=*/true)) {
-    S.emitDiagnoseIfDiagnostic(Fn->getLocStart(), Attr);
-    return;
-  }
-
-  for (const auto *W : Nonfatal)
-    S.emitDiagnoseIfDiagnostic(Fn->getLocStart(), W);
 }
 
 /// ActOnCallExpr - Handle a call to Fn with the specified array of arguments.
@@ -7548,22 +7531,6 @@ Sema::CheckAssignmentConstraints(QualType LHSType, ExprResult &RHS,
         return IncompatibleVectors;
       }
     }
-
-    // When the RHS comes from another lax conversion (e.g. binops between
-    // scalars and vectors) the result is canonicalized as a vector. When the
-    // LHS is also a vector, the lax is allowed by the condition above. Handle
-    // the case where LHS is a scalar.
-    if (LHSType->isScalarType()) {
-      const VectorType *VecType = RHSType->getAs<VectorType>();
-      if (VecType && VecType->getNumElements() == 1 &&
-          isLaxVectorConversion(RHSType, LHSType)) {
-        ExprResult *VecExpr = &RHS;
-        *VecExpr = ImpCastExprToType(VecExpr->get(), LHSType, CK_BitCast);
-        Kind = CK_BitCast;
-        return Compatible;
-      }
-    }
-
     return Incompatible;
   }
 
@@ -8098,7 +8065,6 @@ QualType Sema::CheckVectorOperands(ExprResult &LHS, ExprResult &RHS,
 
   // If there's an ext-vector type and a scalar, try to convert the scalar to
   // the vector element type and splat.
-  // FIXME: this should also work for regular vector types as supported in GCC.
   if (!RHSVecType && isa<ExtVectorType>(LHSVecType)) {
     if (!tryVectorConvertAndSplat(*this, &RHS, RHSType,
                                   LHSVecType->getElementType(), LHSType))
@@ -8111,31 +8077,14 @@ QualType Sema::CheckVectorOperands(ExprResult &LHS, ExprResult &RHS,
       return RHSType;
   }
 
-  // FIXME: The code below also handles convertion between vectors and
-  // non-scalars, we should break this down into fine grained specific checks
-  // and emit proper diagnostics.
-  QualType VecType = LHSVecType ? LHSType : RHSType;
-  const VectorType *VT = LHSVecType ? LHSVecType : RHSVecType;
-  QualType OtherType = LHSVecType ? RHSType : LHSType;
-  ExprResult *OtherExpr = LHSVecType ? &RHS : &LHS;
-  if (isLaxVectorConversion(OtherType, VecType)) {
-    // If we're allowing lax vector conversions, only the total (data) size
-    // needs to be the same. For non compound assignment, if one of the types is
-    // scalar, the result is always the vector type.
-    if (!IsCompAssign) {
-      *OtherExpr = ImpCastExprToType(OtherExpr->get(), VecType, CK_BitCast);
-      return VecType;
-    // In a compound assignment, lhs += rhs, 'lhs' is a lvalue src, forbidding
-    // any implicit cast. Here, the 'rhs' should be implicit casted to 'lhs'
-    // type. Note that this is already done by non-compound assignments in
-    // CheckAssignmentConstraints. If it's a scalar type, only bitcast for
-    // <1 x T> -> T. The result is also a vector type.
-    } else if (OtherType->isExtVectorType() ||
-               (OtherType->isScalarType() && VT->getNumElements() == 1)) {
-      ExprResult *RHSExpr = &RHS;
-      *RHSExpr = ImpCastExprToType(RHSExpr->get(), LHSType, CK_BitCast);
-      return VecType;
-    }
+  // If we're allowing lax vector conversions, only the total (data) size
+  // needs to be the same.
+  // FIXME: Should we really be allowing this?
+  // FIXME: We really just pick the LHS type arbitrarily?
+  if (isLaxVectorConversion(RHSType, LHSType)) {
+    QualType resultType = LHSType;
+    RHS = ImpCastExprToType(RHS.get(), resultType, CK_BitCast);
+    return resultType;
   }
 
   // Okay, the expression is invalid.
@@ -9391,7 +9340,10 @@ QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
     //   If both operands are pointers, [...] bring them to their composite
     //   pointer type.
     if ((int)LHSType->isPointerType() + (int)RHSType->isPointerType() >=
-        (IsRelational ? 2 : 1)) {
+            (IsRelational ? 2 : 1) &&
+        (!LangOpts.ObjCAutoRefCount ||
+         !(LHSType->isObjCObjectPointerType() ||
+           RHSType->isObjCObjectPointerType()))) {
       if (convertPointersToCompositeType(*this, Loc, LHS, RHS))
         return QualType();
       else
@@ -9741,7 +9693,7 @@ QualType Sema::CheckVectorCompareOperands(ExprResult &LHS, ExprResult &RHS,
   }
   
   // Return a signed type for the vector.
-  return GetSignedVectorType(vType);
+  return GetSignedVectorType(LHSType);
 }
 
 QualType Sema::CheckVectorLogicalOperands(ExprResult &LHS, ExprResult &RHS,
@@ -11229,7 +11181,7 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
   
   if (CompResultTy.isNull())
     return new (Context) BinaryOperator(LHS.get(), RHS.get(), Opc, ResultTy, VK,
-                                        OK, OpLoc, FPFeatures.fp_contract);
+                                        OK, OpLoc, FPFeatures);
   if (getLangOpts().CPlusPlus && LHS.get()->getObjectKind() !=
       OK_ObjCProperty) {
     VK = VK_LValue;
@@ -11237,7 +11189,7 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
   }
   return new (Context) CompoundAssignOperator(
       LHS.get(), RHS.get(), Opc, ResultTy, VK, OK, CompLHSTy, CompResultTy,
-      OpLoc, FPFeatures.fp_contract);
+      OpLoc, FPFeatures);
 }
 
 /// DiagnoseBitwisePrecedence - Emit a warning when bitwise and comparison
@@ -13594,16 +13546,55 @@ static bool captureInBlock(BlockScopeInfo *BSI, VarDecl *Var,
   }
 
   // Warn about implicitly autoreleasing indirect parameters captured by blocks.
-  if (auto *PT = dyn_cast<PointerType>(CaptureType)) {
+  if (const auto *PT = CaptureType->getAs<PointerType>()) {
+    // This function finds out whether there is an AttributedType of kind
+    // attr_objc_ownership in Ty. The existence of AttributedType of kind
+    // attr_objc_ownership implies __autoreleasing was explicitly specified
+    // rather than being added implicitly by the compiler.
+    auto IsObjCOwnershipAttributedType = [](QualType Ty) {
+      while (const auto *AttrTy = Ty->getAs<AttributedType>()) {
+        if (AttrTy->getAttrKind() == AttributedType::attr_objc_ownership)
+          return true;
+
+        // Peel off AttributedTypes that are not of kind objc_ownership.
+        Ty = AttrTy->getModifiedType();
+      }
+
+      return false;
+    };
+
     QualType PointeeTy = PT->getPointeeType();
-    if (isa<ObjCObjectPointerType>(PointeeTy.getCanonicalType()) &&
+
+    if (PointeeTy->getAs<ObjCObjectPointerType>() &&
         PointeeTy.getObjCLifetime() == Qualifiers::OCL_Autoreleasing &&
-        !isa<AttributedType>(PointeeTy)) {
+        !IsObjCOwnershipAttributedType(PointeeTy)) {
       if (BuildAndDiagnose) {
         SourceLocation VarLoc = Var->getLocation();
         S.Diag(Loc, diag::warn_block_capture_autoreleasing);
-        S.Diag(VarLoc, diag::note_declare_parameter_autoreleasing) <<
-            FixItHint::CreateInsertion(VarLoc, "__autoreleasing");
+        {
+          auto AddAutoreleaseNote =
+              S.Diag(VarLoc, diag::note_declare_parameter_autoreleasing);
+          // Provide a fix-it for the '__autoreleasing' keyword at the
+          // appropriate location in the variable's type.
+          if (const auto *TSI = Var->getTypeSourceInfo()) {
+            PointerTypeLoc PTL =
+                TSI->getTypeLoc().getAsAdjusted<PointerTypeLoc>();
+            if (PTL) {
+              SourceLocation Loc = PTL.getPointeeLoc().getEndLoc();
+              Loc = Lexer::getLocForEndOfToken(Loc, 0, S.getSourceManager(),
+                                               S.getLangOpts());
+              if (Loc.isValid()) {
+                StringRef CharAtLoc = Lexer::getSourceText(
+                    CharSourceRange::getCharRange(Loc, Loc.getLocWithOffset(1)),
+                    S.getSourceManager(), S.getLangOpts());
+                AddAutoreleaseNote << FixItHint::CreateInsertion(
+                    Loc, CharAtLoc.empty() || !isWhitespace(CharAtLoc[0])
+                             ? " __autoreleasing "
+                             : " __autoreleasing");
+              }
+            }
+          }
+        }
         S.Diag(VarLoc, diag::note_declare_parameter_strong);
       }
     }
@@ -14244,8 +14235,9 @@ static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
         (SemaRef.CurContext != Var->getDeclContext() &&
          Var->getDeclContext()->isFunctionOrMethod() && Var->hasLocalStorage());
     if (RefersToEnclosingScope) {
-      if (LambdaScopeInfo *const LSI =
-              SemaRef.getCurLambda(/*IgnoreCapturedRegions=*/true)) {
+      LambdaScopeInfo *const LSI =
+          SemaRef.getCurLambda(/*IgnoreNonLambdaCapturingScope=*/true);
+      if (LSI && !LSI->CallOperator->Encloses(Var->getDeclContext())) {
         // If a variable could potentially be odr-used, defer marking it so
         // until we finish analyzing the full expression for any
         // lvalue-to-rvalue

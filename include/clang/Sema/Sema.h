@@ -1061,14 +1061,12 @@ public:
   /// statements.
   class FPContractStateRAII {
   public:
-    FPContractStateRAII(Sema& S)
-      : S(S), OldFPContractState(S.FPFeatures.fp_contract) {}
-    ~FPContractStateRAII() {
-      S.FPFeatures.fp_contract = OldFPContractState;
-    }
+    FPContractStateRAII(Sema &S) : S(S), OldFPFeaturesState(S.FPFeatures) {}
+    ~FPContractStateRAII() { S.FPFeatures = OldFPFeaturesState; }
+
   private:
     Sema& S;
-    bool OldFPContractState : 1;
+    FPOptions OldFPFeaturesState;
   };
 
   void addImplicitTypedef(StringRef Name, QualType T);
@@ -1242,9 +1240,11 @@ public:
   sema::BlockScopeInfo *getCurBlock();
 
   /// Retrieve the current lambda scope info, if any.
-  /// \param IgnoreCapturedRegions true if should find the top-most lambda scope
-  /// info ignoring all inner captured regions scope infos.
-  sema::LambdaScopeInfo *getCurLambda(bool IgnoreCapturedRegions = false);
+  /// \param IgnoreNonLambdaCapturingScope true if should find the top-most
+  /// lambda scope info ignoring all inner capturing scopes that are not
+  /// lambda scopes.
+  sema::LambdaScopeInfo *
+  getCurLambda(bool IgnoreNonLambdaCapturingScope = false);
 
   /// \brief Retrieve the current generic lambda info, if any.
   sema::LambdaScopeInfo *getCurGenericLambda();
@@ -2562,14 +2562,14 @@ public:
   void AddMethodCandidate(DeclAccessPair FoundDecl,
                           QualType ObjectType,
                           Expr::Classification ObjectClassification,
-                          Expr *ThisArg, ArrayRef<Expr *> Args,
+                          ArrayRef<Expr *> Args,
                           OverloadCandidateSet& CandidateSet,
                           bool SuppressUserConversion = false);
   void AddMethodCandidate(CXXMethodDecl *Method,
                           DeclAccessPair FoundDecl,
                           CXXRecordDecl *ActingContext, QualType ObjectType,
                           Expr::Classification ObjectClassification,
-                          Expr *ThisArg, ArrayRef<Expr *> Args,
+                          ArrayRef<Expr *> Args,
                           OverloadCandidateSet& CandidateSet,
                           bool SuppressUserConversions = false,
                           bool PartialOverloading = false,
@@ -2580,7 +2580,6 @@ public:
                                  TemplateArgumentListInfo *ExplicitTemplateArgs,
                                   QualType ObjectType,
                                   Expr::Classification ObjectClassification,
-                                  Expr *ThisArg,
                                   ArrayRef<Expr *> Args,
                                   OverloadCandidateSet& CandidateSet,
                                   bool SuppressUserConversions = false,
@@ -2654,37 +2653,27 @@ public:
   EnableIfAttr *CheckEnableIf(FunctionDecl *Function, ArrayRef<Expr *> Args,
                               bool MissingImplicitThis = false);
 
-  /// Check the diagnose_if attributes on the given function. Returns the
-  /// first succesful fatal attribute, or null if calling Function(Args) isn't
-  /// an error.
+  /// Emit diagnostics for the diagnose_if attributes on Function, ignoring any
+  /// non-ArgDependent DiagnoseIfAttrs.
   ///
-  /// This only considers ArgDependent DiagnoseIfAttrs.
+  /// Argument-dependent diagnose_if attributes should be checked each time a
+  /// function is used as a direct callee of a function call.
   ///
-  /// This will populate Nonfatal with all non-error DiagnoseIfAttrs that
-  /// succeed. If this function returns non-null, the contents of Nonfatal are
-  /// unspecified.
-  DiagnoseIfAttr *
-  checkArgDependentDiagnoseIf(FunctionDecl *Function, ArrayRef<Expr *> Args,
-                              SmallVectorImpl<DiagnoseIfAttr *> &Nonfatal,
-                              bool MissingImplicitThis = false,
-                              Expr *ThisArg = nullptr);
+  /// Returns true if any errors were emitted.
+  bool diagnoseArgDependentDiagnoseIfAttrs(const FunctionDecl *Function,
+                                           const Expr *ThisArg,
+                                           ArrayRef<const Expr *> Args,
+                                           SourceLocation Loc);
 
-  /// Check the diagnose_if expressions on the given function. Returns the
-  /// first succesful fatal attribute, or null if using Function isn't
-  /// an error.
+  /// Emit diagnostics for the diagnose_if attributes on Function, ignoring any
+  /// ArgDependent DiagnoseIfAttrs.
   ///
-  /// This ignores all ArgDependent DiagnoseIfAttrs.
+  /// Argument-independent diagnose_if attributes should be checked on every use
+  /// of a function.
   ///
-  /// This will populate Nonfatal with all non-error DiagnoseIfAttrs that
-  /// succeed. If this function returns non-null, the contents of Nonfatal are
-  /// unspecified.
-  DiagnoseIfAttr *
-  checkArgIndependentDiagnoseIf(FunctionDecl *Function,
-                                SmallVectorImpl<DiagnoseIfAttr *> &Nonfatal);
-
-  /// Emits the diagnostic contained in the given DiagnoseIfAttr at Loc. Also
-  /// emits a note about the location of said attribute.
-  void emitDiagnoseIfDiagnostic(SourceLocation Loc, const DiagnoseIfAttr *DIA);
+  /// Returns true if any errors were emitted.
+  bool diagnoseArgIndependentDiagnoseIfAttrs(const FunctionDecl *Function,
+                                             SourceLocation Loc);
 
   /// Returns whether the given function's address can be taken or not,
   /// optionally emitting a diagnostic if the address can't be taken.
@@ -3289,7 +3278,9 @@ public:
                       SourceLocation LParenLoc,
                       FieldDeclarator &FD,
                       Selector GetterSel,
+                      SourceLocation GetterNameLoc,
                       Selector SetterSel,
+                      SourceLocation SetterNameLoc,
                       const bool isReadWrite,
                       unsigned &Attributes,
                       const unsigned AttributesAsWritten,
@@ -3305,7 +3296,9 @@ public:
                                        SourceLocation LParenLoc,
                                        FieldDeclarator &FD,
                                        Selector GetterSel,
+                                       SourceLocation GetterNameLoc,
                                        Selector SetterSel,
+                                       SourceLocation SetterNameLoc,
                                        const bool isReadWrite,
                                        const unsigned Attributes,
                                        const unsigned AttributesAsWritten,
@@ -7649,7 +7642,8 @@ public:
                                     Decl * const *ProtoRefs,
                                     unsigned NumProtoRefs,
                                     const SourceLocation *ProtoLocs,
-                                    SourceLocation EndProtoLoc);
+                                    SourceLocation EndProtoLoc,
+                                    AttributeList *AttrList);
 
   Decl *ActOnStartClassImplementation(
                     SourceLocation AtClassImplLoc,
@@ -8097,8 +8091,9 @@ public:
                             SourceLocation AliasNameLoc);
 
   /// ActOnPragmaFPContract - Called on well formed
-  /// \#pragma {STDC,OPENCL} FP_CONTRACT
-  void ActOnPragmaFPContract(tok::OnOffSwitch OOS);
+  /// \#pragma {STDC,OPENCL} FP_CONTRACT and
+  /// \#pragma clang fp contract
+  void ActOnPragmaFPContract(LangOptions::FPContractModeKind FPC);
 
   /// AddAlignmentAttributesForRecord - Adds any needed alignment attributes to
   /// a the record decl, to handle '\#pragma pack' and '\#pragma options align'.
@@ -9835,6 +9830,8 @@ public:
   void CodeCompletePostfixExpression(Scope *S, ExprResult LHS);
   void CodeCompleteTag(Scope *S, unsigned TagSpec);
   void CodeCompleteTypeQualifiers(DeclSpec &DS);
+  void CodeCompleteFunctionQualifiers(DeclSpec &DS, Declarator &D,
+                                      const VirtSpecifiers *VS = nullptr);
   void CodeCompleteBracketDeclarator(Scope *S);
   void CodeCompleteCase(Scope *S);
   void CodeCompleteCall(Scope *S, Expr *Fn, ArrayRef<Expr *> Args);
@@ -9961,8 +9958,8 @@ private:
                             SourceLocation Loc);
 
   void checkCall(NamedDecl *FDecl, const FunctionProtoType *Proto,
-                 ArrayRef<const Expr *> Args, bool IsMemberFunction,
-                 SourceLocation Loc, SourceRange Range,
+                 const Expr *ThisArg, ArrayRef<const Expr *> Args,
+                 bool IsMemberFunction, SourceLocation Loc, SourceRange Range,
                  VariadicCallType CallType);
 
   bool CheckObjCString(Expr *Arg);

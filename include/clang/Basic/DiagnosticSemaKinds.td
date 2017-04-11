@@ -1664,8 +1664,8 @@ def err_init_conversion_failed : Error<
   "cannot initialize %select{a variable|a parameter|return object|an "
   "exception object|a member subobject|an array element|a new value|a value|a "
   "base class|a constructor delegation|a vector element|a block element|a "
-  "complex element|a lambda capture|a compound literal initializer|a "
-  "related result|a parameter of CF audited function}0 "
+  "block element|a complex element|a lambda capture|a compound literal "
+  "initializer|a related result|a parameter of CF audited function}0 "
   "%diff{of type $ with an %select{rvalue|lvalue}2 of type $|"
   "with an %select{rvalue|lvalue}2 of incompatible type}1,3"
   "%select{|: different classes%diff{ ($ vs $)|}5,6"
@@ -2659,7 +2659,8 @@ def warn_attribute_wrong_decl_type : Warning<
   "|functions, methods, enums, and classes"
   "|structs, classes, variables, functions, and inline namespaces"
   "|variables, functions, methods, types, enumerations, enumerators, labels, and non-static data members"
-  "|classes and enumerations}1">,
+  "|classes and enumerations"
+  "|named declarations}1">,
   InGroup<IgnoredAttributes>;
 def err_attribute_wrong_decl_type : Error<warn_attribute_wrong_decl_type.Text>;
 def warn_type_attribute_wrong_type : Warning<
@@ -3441,7 +3442,8 @@ def note_ovl_candidate_has_pass_object_size_params: Note<
     "candidate address cannot be taken because parameter %0 has "
     "pass_object_size attribute">;
 def err_diagnose_if_succeeded : Error<"%0">;
-def warn_diagnose_if_succeeded : Warning<"%0">, InGroup<UserDefinedWarnings>;
+def warn_diagnose_if_succeeded : Warning<"%0">, InGroup<UserDefinedWarnings>,
+    ShowInSystemHeader;
 def note_ovl_candidate_disabled_by_function_cond_attr : Note<
     "candidate disabled: %0">;
 def note_ovl_candidate_disabled_by_extension : Note<
@@ -5231,7 +5233,7 @@ def err_arc_inconsistent_property_ownership : Error<
 def warn_block_capture_autoreleasing : Warning<
   "block captures an autoreleasing out-parameter, which may result in "
   "use-after-free bugs">,
-  InGroup<BlockCaptureAutoReleasing>, DefaultIgnore;
+  InGroup<BlockCaptureAutoReleasing>;
 def note_declare_parameter_autoreleasing : Note<
   "declare the parameter __autoreleasing explicitly to suppress this warning">;
 def note_declare_parameter_strong : Note<
@@ -5983,6 +5985,12 @@ def warn_objc_circular_container : Warning<
   "adding '%0' to '%1' might cause circular dependency in container">,
   InGroup<DiagGroup<"objc-circular-container">>;
 def note_objc_circular_container_declared_here : Note<"'%0' declared here">;
+def warn_objc_unsafe_perform_selector : Warning<
+  "%0 is incompatible with selectors that return a "
+  "%select{struct|union|vector}1 type">,
+  InGroup<DiagGroup<"objc-unsafe-perform-selector">>;
+def note_objc_unsafe_perform_selector_method_declared_here :  Note<
+  "method %0 that returns %1 declared here">;
 
 def warn_setter_getter_impl_required : Warning<
   "property %0 requires method %1 to be defined - "

@@ -584,8 +584,16 @@ namespace {
       emitCommonTypeInfo(out, info);
 
       uint8_t payload = 0;
+      if (auto swiftImportAsNonGeneric = info.getSwiftImportAsNonGeneric()) {
+        payload |= (0x01 << 1) | swiftImportAsNonGeneric.getValue();
+      }
+      payload <<= 2;
+      if (auto swiftObjCMembers = info.getSwiftObjCMembers()) {
+        payload |= (0x01 << 1) | swiftObjCMembers.getValue();
+      }
+      payload <<= 3;
       if (auto nullable = info.getDefaultNullability()) {
-        payload = (0x01 << 2) | static_cast<uint8_t>(*nullable);
+        payload |= (0x01 << 2) | static_cast<uint8_t>(*nullable);
       }
       payload = (payload << 1) | (info.hasDesignatedInits() ? 1 : 0);
       out << payload;
@@ -766,7 +774,7 @@ namespace {
     }
 
     void emitUnversionedInfo(raw_ostream &out, const ObjCMethodInfo &info) {
-      uint8_t payload = info.FactoryAsInit;
+      uint8_t payload = 0;
       payload = (payload << 1) | info.DesignatedInit;
       payload = (payload << 1) | info.Required;
       endian::Writer<little> writer(out);

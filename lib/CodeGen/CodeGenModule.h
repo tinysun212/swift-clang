@@ -166,7 +166,7 @@ struct ObjCEntrypoints {
   /// void objc_release(id);
   llvm::Constant *objc_release;
 
-  /// id objc_storeStrong(id*, id);
+  /// void objc_storeStrong(id*, id);
   llvm::Constant *objc_storeStrong;
 
   /// id objc_storeWeak(id*, id);
@@ -545,6 +545,10 @@ public:
     assert(ObjCData != nullptr);
     return *ObjCData;
   }
+
+  // Version checking function, used to implement ObjC's @available:
+  // i32 @__isOSVersionAtLeast(i32, i32, i32)
+  llvm::Constant *IsOSVersionAtLeastFn = nullptr;
 
   InstrProfStats &getPGOStats() { return PGOStats; }
   llvm::IndexedInstrProfReader *getPGOReader() const { return PGOReader.get(); }
@@ -1265,6 +1269,10 @@ private:
 
   /// Emit any vtables which we deferred and still have a use for.
   void EmitDeferredVTables();
+
+  /// Emit a dummy function that reference a CoreFoundation symbol when
+  /// @available is used on Darwin.
+  void emitAtAvailableLinkGuard();
 
   /// Emit the llvm.used and llvm.compiler.used metadata.
   void emitLLVMUsed();

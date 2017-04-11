@@ -1776,6 +1776,46 @@ numeric primitives such as frexp. See `LLVM canonicalize intrinsic
 <http://llvm.org/docs/LangRef.html#llvm-canonicalize-intrinsic>`_ for
 more information on the semantics.
 
+String builtins
+---------------
+
+Clang provides constant expression evaluation support for builtins forms of
+the following functions from the C standard library ``<strings.h>`` header:
+
+* ``memchr``
+* ``memcmp``
+* ``strchr``
+* ``strcmp``
+* ``strlen``
+* ``strncmp``
+* ``wcschr``
+* ``wcscmp``
+* ``wcslen``
+* ``wcsncmp``
+* ``wmemchr``
+* ``wmemcmp``
+
+In each case, the builtin form has the name of the C library function prefixed
+by ``__builtin_``. Example:
+
+.. code-block:: c
+
+  void *p = __builtin_memchr("foobar", 'b', 5);
+
+In addition to the above, one further builtin is provided:
+
+.. code-block:: c
+
+  char *__builtin_char_memchr(const char *haystack, int needle, size_t size);
+
+``__builtin_char_memchr(a, b, c)`` is identical to
+``(char*)__builtin_memchr(a, b, c)`` except that its use is permitted within
+constant expressions in C++11 onwards (where a cast from ``void*`` to ``char*``
+is disallowed in general).
+
+Support for constant expression evaluation for the above builtins be detected
+with ``__has_feature(cxx_constexpr_string_builtins)``.
+
 .. _langext-__c11_atomic:
 
 __c11_atomic builtins
@@ -2272,3 +2312,36 @@ For example, the hint ``vectorize_width(4)`` is ignored if the loop is not
 proven safe to vectorize. To identify and diagnose optimization issues use
 `-Rpass`, `-Rpass-missed`, and `-Rpass-analysis` command line options. See the
 user guide for details.
+
+Extensions to specify floating-point flags
+====================================================
+
+The ``#pragma clang fp`` pragma allows floating-point options to be specified
+for a section of the source code. This pragma can only appear at file scope or
+at the start of a compound statement (excluding comments). When using within a
+compound statement, the pragma is active within the scope of the compound
+statement.
+
+Currently, only FP contraction can be controlled with the pragma. ``#pragma
+clang fp contract`` specifies whether the compiler should contract a multiply
+and an addition (or subtraction) into a fused FMA operation when supported by
+the target.
+
+The pragma can take three values: ``on``, ``fast`` and ``off``.  The ``on``
+option is identical to using ``#pragma STDC FP_CONTRACT(ON)`` and it allows
+fusion as specified the language standard.  The ``fast`` option allows fusiong
+in cases when the language standard does not make this possible (e.g. across
+statements in C)
+
+.. code-block:: c++
+
+  for(...) {
+    #pragma clang fp contract(fast)
+    a = b[i] * c[i];
+    d[i] += a;
+  }
+
+
+The pragma can also be used with ``off`` which turns FP contraction off for a
+section of the code. This can be useful when fast contraction is otherwise
+enabled for the translation unit with the ``-ffp-contract=fast`` flag.

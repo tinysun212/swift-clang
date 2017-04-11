@@ -4424,8 +4424,10 @@ Decl *ASTNodeImporter::VisitObjCPropertyDecl(ObjCPropertyDecl *D) {
   ToProperty->setPropertyAttributes(D->getPropertyAttributes());
   ToProperty->setPropertyAttributesAsWritten(
                                       D->getPropertyAttributesAsWritten());
-  ToProperty->setGetterName(Importer.Import(D->getGetterName()));
-  ToProperty->setSetterName(Importer.Import(D->getSetterName()));
+  ToProperty->setGetterName(Importer.Import(D->getGetterName()),
+                            Importer.Import(D->getGetterNameLoc()));
+  ToProperty->setSetterName(Importer.Import(D->getSetterName()),
+                            Importer.Import(D->getSetterNameLoc()));
   ToProperty->setGetterMethodDecl(
      cast_or_null<ObjCMethodDecl>(Importer.Import(D->getGetterMethodDecl())));
   ToProperty->setSetterMethodDecl(
@@ -5860,7 +5862,7 @@ Expr *ASTNodeImporter::VisitBinaryOperator(BinaryOperator *E) {
                                                       T, E->getValueKind(),
                                                       E->getObjectKind(),
                                            Importer.Import(E->getOperatorLoc()),
-                                                      E->isFPContractable());
+                                                      E->getFPFeatures());
 }
 
 Expr *ASTNodeImporter::VisitConditionalOperator(ConditionalOperator *E) {
@@ -6010,7 +6012,7 @@ Expr *ASTNodeImporter::VisitCompoundAssignOperator(CompoundAssignOperator *E) {
                                                E->getObjectKind(),
                                                CompLHSType, CompResultType,
                                            Importer.Import(E->getOperatorLoc()),
-                                               E->isFPContractable());
+                                               E->getFPFeatures());
 }
 
 bool ASTNodeImporter::ImportCastPath(CastExpr *CE, CXXCastPath &Path) {

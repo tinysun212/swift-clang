@@ -2438,6 +2438,32 @@ static void handleAvailabilityAttr(Sema &S, Decl *D,
   }
 }
 
+static void handleExternalSourceSymbolAttr(Sema &S, Decl *D,
+                                           const AttributeList &Attr) {
+  if (!checkAttributeAtLeastNumArgs(S, Attr, 1))
+    return;
+  assert(checkAttributeAtMostNumArgs(S, Attr, 3) &&
+         "Invalid number of arguments in an external_source_symbol attribute");
+
+  if (!isa<NamedDecl>(D)) {
+    S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type)
+        << Attr.getName() << ExpectedNamedDecl;
+    return;
+  }
+
+  StringRef Language;
+  if (const auto *SE = dyn_cast_or_null<StringLiteral>(Attr.getArgAsExpr(0)))
+    Language = SE->getString();
+  StringRef DefinedIn;
+  if (const auto *SE = dyn_cast_or_null<StringLiteral>(Attr.getArgAsExpr(1)))
+    DefinedIn = SE->getString();
+  bool IsGeneratedDeclaration = Attr.getArgAsIdent(2) != nullptr;
+
+  D->addAttr(::new (S.Context) ExternalSourceSymbolAttr(
+      Attr.getRange(), S.Context, Language, DefinedIn, IsGeneratedDeclaration,
+      Attr.getAttributeSpellingListIndex()));
+}
+
 template <class T>
 static T *mergeVisibilityAttr(Sema &S, Decl *D, SourceRange range,
                               typename T::VisibilityType value,
@@ -2944,6 +2970,28 @@ static void handleCleanupAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   D->addAttr(::new (S.Context)
              CleanupAttr(Attr.getRange(), S.Context, FD,
                          Attr.getAttributeSpellingListIndex()));
+}
+
+static void handleEnumExtensibilityAttr(Sema &S, Decl *D,
+                                        const AttributeList &Attr) {
+  if (!Attr.isArgIdent(0)) {
+    S.Diag(Attr.getLoc(), diag::err_attribute_argument_n_type)
+        << Attr.getName() << 0 << AANT_ArgumentIdentifier;
+    return;
+  }
+
+  EnumExtensibilityAttr::Kind ExtensibilityKind;
+  IdentifierInfo *II = Attr.getArgAsIdent(0)->Ident;
+  if (!EnumExtensibilityAttr::ConvertStrToKind(II->getName(),
+                                               ExtensibilityKind)) {
+    S.Diag(Attr.getLoc(), diag::warn_attribute_type_not_supported)
+        << Attr.getName() << II;
+    return;
+  }
+
+  D->addAttr(::new (S.Context) EnumExtensibilityAttr(
+      Attr.getRange(), S.Context, ExtensibilityKind,
+      Attr.getAttributeSpellingListIndex()));
 }
 
 /// Handle __attribute__((format_arg((idx)))) attribute based on
@@ -6271,6 +6319,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_ExtVectorType:
     handleExtVectorTypeAttr(S, scope, D, Attr);
     break;
+  case AttributeList::AT_ExternalSourceSymbol:
+    handleExternalSourceSymbolAttr(S, D, Attr);
+    break;
   case AttributeList::AT_MinSize:
     handleMinSizeAttr(S, D, Attr);
     break;
@@ -6279,6 +6330,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
   case AttributeList::AT_FlagEnum:
     handleSimpleAttribute<FlagEnumAttr>(S, D, Attr);
+    break;
+  case AttributeList::AT_EnumExtensibility:
+    handleEnumExtensibilityAttr(S, D, Attr);
     break;
   case AttributeList::AT_Flatten:
     handleSimpleAttribute<FlattenAttr>(S, D, Attr);
@@ -6739,6 +6793,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
   case AttributeList::AT_SwiftBridge:
     handleSwiftBridgeAttr(S, D, Attr);
+    break;
+  case AttributeList::AT_SwiftObjCMembers:
+    handleSimpleAttribute<SwiftObjCMembersAttr>(S, D, Attr);
     break;
   case AttributeList::AT_SwiftNewtype:
     handleSwiftNewtypeAttr(S, D, Attr);

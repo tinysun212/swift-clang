@@ -24,7 +24,6 @@
 #include "CodeGenFunction.h"
 #include "CodeGenPGO.h"
 #include "CodeGenTBAA.h"
-#include "ConstantBuilder.h"
 #include "CoverageMappingGen.h"
 #include "TargetInfo.h"
 #include "clang/AST/ASTContext.h"
@@ -42,6 +41,7 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/Version.h"
+#include "clang/CodeGen/ConstantInitBuilder.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/Triple.h"
@@ -408,6 +408,7 @@ void CodeGenModule::Release() {
     CoverageMapping->emit();
   if (CodeGenOpts.SanitizeCfiCrossDso)
     CodeGenFunction(*this).EmitCfiCheckFail();
+  emitAtAvailableLinkGuard();
   emitLLVMUsed();
   if (SanStats)
     SanStats->finish();
@@ -3341,6 +3342,7 @@ CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
     llvm_unreachable("unknown file format");
   case llvm::Triple::COFF:
   case llvm::Triple::ELF:
+  case llvm::Triple::Wasm:
     GV->setSection("cfstring");
     break;
   case llvm::Triple::MachO:

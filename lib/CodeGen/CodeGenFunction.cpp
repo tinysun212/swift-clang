@@ -112,9 +112,8 @@ CodeGenFunction::~CodeGenFunction() {
   if (FirstBlockInfo)
     destroyBlockInfos(FirstBlockInfo);
 
-  if (getLangOpts().OpenMP) {
+  if (getLangOpts().OpenMP && CurFn)
     CGM.getOpenMPRuntime().functionFinished(*this);
-  }
 }
 
 CharUnits CodeGenFunction::getNaturalPointeeTypeAlignment(QualType T,
@@ -708,6 +707,11 @@ static bool endsWithReturn(const Decl* F) {
   return false;
 }
 
+static void markAsIgnoreThreadCheckingAtRuntime(llvm::Function *Fn) {
+  Fn->addFnAttr("sanitize_thread_no_checking_at_run_time");
+  Fn->removeFnAttr(llvm::Attribute::SanitizeThread);
+}
+
 void CodeGenFunction::StartFunction(GlobalDecl GD,
                                     QualType RetTy,
                                     llvm::Function *Fn,
@@ -751,16 +755,19 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
     Fn->addFnAttr(llvm::Attribute::SafeStack);
 
   // Ignore TSan memory acesses from within ObjC/ObjC++ dealloc, initialize,
-  // .cxx_destruct and all of their calees at run time.
+  // .cxx_destruct, __destroy_helper_block_ and all of their calees at run time.
   if (SanOpts.has(SanitizerKind::Thread)) {
     if (const auto *OMD = dyn_cast_or_null<ObjCMethodDecl>(D)) {
       IdentifierInfo *II = OMD->getSelector().getIdentifierInfoForSlot(0);
       if (OMD->getMethodFamily() == OMF_dealloc ||
           OMD->getMethodFamily() == OMF_initialize ||
           (OMD->getSelector().isUnarySelector() && II->isStr(".cxx_destruct"))) {
-        Fn->addFnAttr("sanitize_thread_no_checking_at_run_time");
-        Fn->removeFnAttr(llvm::Attribute::SanitizeThread);
+        markAsIgnoreThreadCheckingAtRuntime(Fn);
       }
+    } else if (const auto *FD = dyn_cast_or_null<FunctionDecl>(D)) {
+      IdentifierInfo *II = FD->getIdentifier();
+      if (II && II->isStr("__destroy_helper_block_"))
+        markAsIgnoreThreadCheckingAtRuntime(Fn);
     }
   }
 
@@ -805,6 +812,18 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
             llvm::ConstantStruct::getAnon(PrologueStructElems, /*Packed=*/true);
         Fn->setPrologueData(PrologueStructConst);
       }
+    }
+  }
+
+  // If we're checking nullability, we need to know whether we can check the
+  // return value. Initialize the flag to 'true' and refine it in EmitParmDecl.
+  if (SanOpts.has(SanitizerKind::NullabilityReturn)) {
+    auto Nullability = FnRetTy->getNullability(getContext());
+    if (Nullability && *Nullability == NullabilityKind::NonNull) {
+      if (!(SanOpts.has(SanitizerKind::ReturnsNonnullAttribute) &&
+            CurCodeDecl && CurCodeDecl->getAttr<ReturnsNonNullAttr>()))
+        RetValNullabilityPrecondition =
+            llvm::ConstantInt::getTrue(getLLVMContext());
     }
   }
 
@@ -935,6 +954,15 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
       // FIXME: Should we generate a new load for each use of 'this'?  The
       // fast register allocator would be happier...
       CXXThisValue = CXXABIThisValue;
+    }
+
+    // Null-check the 'this' pointer once per function, if it's available.
+    if (CXXThisValue) {
+      SanitizerSet SkippedChecks;
+      SkippedChecks.set(SanitizerKind::Alignment, true);
+      SkippedChecks.set(SanitizerKind::ObjectSize, true);
+      EmitTypeCheck(TCK_Load, Loc, CXXThisValue, MD->getThisType(getContext()),
+                    /*Alignment=*/CharUnits::Zero(), SkippedChecks);
     }
   }
 

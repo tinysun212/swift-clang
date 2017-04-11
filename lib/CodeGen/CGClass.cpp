@@ -309,8 +309,10 @@ Address CodeGenFunction::GetAddressOfBaseClass(
   // just do a bitcast; null checks are unnecessary.
   if (NonVirtualOffset.isZero() && !VBase) {
     if (sanitizePerformTypeCheck()) {
+      SanitizerSet SkippedChecks;
+      SkippedChecks.set(SanitizerKind::Null, !NullCheckValue);
       EmitTypeCheck(TCK_Upcast, Loc, Value.getPointer(),
-                    DerivedTy, DerivedAlign, !NullCheckValue);
+                    DerivedTy, DerivedAlign, SkippedChecks);
     }
     return Builder.CreateBitCast(Value, BasePtrTy);
   }
@@ -331,8 +333,10 @@ Address CodeGenFunction::GetAddressOfBaseClass(
   }
 
   if (sanitizePerformTypeCheck()) {
+    SanitizerSet SkippedChecks;
+    SkippedChecks.set(SanitizerKind::Null, true);
     EmitTypeCheck(VBase ? TCK_UpcastToVirtualBase : TCK_Upcast, Loc,
-                  Value.getPointer(), DerivedTy, DerivedAlign, true);
+                  Value.getPointer(), DerivedTy, DerivedAlign, SkippedChecks);
   }
 
   // Compute the virtual offset.
@@ -685,7 +689,8 @@ void CodeGenFunction::EmitInitializerForField(FieldDecl *Field, LValue LHS,
 /// complete-to-base constructor delegation optimization, i.e.
 /// emitting the complete constructor as a simple call to the base
 /// constructor.
-static bool IsConstructorDelegationValid(const CXXConstructorDecl *Ctor) {
+bool CodeGenFunction::IsConstructorDelegationValid(
+    const CXXConstructorDecl *Ctor) {
 
   // Currently we disable the optimization for classes with virtual
   // bases because (1) the addresses of parameter variables need to be
@@ -2102,7 +2107,9 @@ void CodeGenFunction::EmitInheritedCXXConstructorCall(
 void CodeGenFunction::EmitInlinedInheritingCXXConstructorCall(
     const CXXConstructorDecl *Ctor, CXXCtorType CtorType, bool ForVirtualBase,
     bool Delegating, CallArgList &Args) {
-  InlinedInheritingConstructorScope Scope(*this, GlobalDecl(Ctor, CtorType));
+  GlobalDecl GD(Ctor, CtorType);
+  InlinedInheritingConstructorScope Scope(*this, GD);
+  ApplyInlineDebugLocation DebugScope(*this, GD);
 
   // Save the arguments to be passed to the inherited constructor.
   CXXInheritedCtorInitExprArgs = Args;

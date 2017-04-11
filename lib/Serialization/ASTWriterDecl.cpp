@@ -791,7 +791,9 @@ void ASTDeclWriter::VisitObjCPropertyDecl(ObjCPropertyDecl *D) {
   // FIXME: stable encoding
   Record.push_back((unsigned)D->getPropertyImplementation());
   Record.AddDeclarationName(D->getGetterName());
+  Record.AddSourceLocation(D->getGetterNameLoc());
   Record.AddDeclarationName(D->getSetterName());
+  Record.AddSourceLocation(D->getSetterNameLoc());
   Record.AddDeclRef(D->getGetterMethodDecl());
   Record.AddDeclRef(D->getSetterMethodDecl());
   Record.AddDeclRef(D->getPropertyIvarDecl());
@@ -806,7 +808,6 @@ void ASTDeclWriter::VisitObjCImplDecl(ObjCImplDecl *D) {
 
 void ASTDeclWriter::VisitObjCCategoryImplDecl(ObjCCategoryImplDecl *D) {
   VisitObjCImplDecl(D);
-  Record.AddIdentifierRef(D->getIdentifier());
   Record.AddSourceLocation(D->getCategoryNameLoc());
   Code = serialization::DECL_OBJC_CATEGORY_IMPL;
 }

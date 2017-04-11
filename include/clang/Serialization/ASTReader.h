@@ -408,6 +408,9 @@ private:
   /// \brief The module manager which manages modules and their dependencies
   ModuleManager ModuleMgr;
 
+  /// The cache that manages memory buffers for PCM files.
+  MemoryBufferCache &PCMCache;
+
   /// \brief A dummy identifier resolver used to merge TU-scope declarations in
   /// C, for the cases where we don't have a Sema object to provide a real
   /// identifier resolver.
@@ -808,6 +811,17 @@ private:
   int PragmaMSPointersToMembersState = -1;
   SourceLocation PointersToMembersPragmaLocation;
 
+  /// \brief The pragma pack state.
+  Optional<unsigned> PragmaPackCurrentValue;
+  SourceLocation PragmaPackCurrentLocation;
+  struct PragmaPackStackEntry {
+    unsigned Value;
+    SourceLocation Location;
+    StringRef SlotLabel;
+  };
+  llvm::SmallVector<PragmaPackStackEntry, 2> PragmaPackStack;
+  llvm::SmallVector<std::string, 2> PragmaPackStrings;
+
   /// \brief The OpenCL extension settings.
   OpenCLOptions OpenCLExtensions;
 
@@ -1174,7 +1188,7 @@ private:
                             SourceLocation ImportLoc, ModuleFile *ImportedBy,
                             SmallVectorImpl<ImportedModule> &Loaded,
                             off_t ExpectedSize, time_t ExpectedModTime,
-                            serialization::ASTFileSignature ExpectedSignature,
+                            ASTFileSignature ExpectedSignature,
                             unsigned ClientLoadCapabilities);
   ASTReadResult ReadControlBlock(ModuleFile &F,
                                  SmallVectorImpl<ImportedModule> &Loaded,
@@ -1183,7 +1197,22 @@ private:
   static ASTReadResult ReadOptionsBlock(
       llvm::BitstreamCursor &Stream, unsigned ClientLoadCapabilities,
       bool AllowCompatibleConfigurationMismatch, ASTReaderListener &Listener,
-      std::string &SuggestedPredefines, bool ValidateDiagnosticOptions);
+      std::string &SuggestedPredefines);
+
+  /// Read the unhashed control block.
+  ///
+  /// This has no effect on \c F.Stream, instead creating a fresh cursor from
+  /// \c F.Data and reading ahead.
+  ASTReadResult readUnhashedControlBlock(ModuleFile &F, bool WasImportedBy,
+                                         unsigned ClientLoadCapabilities);
+
+  static ASTReadResult
+  readUnhashedControlBlockImpl(ModuleFile *F, llvm::StringRef StreamData,
+                               unsigned ClientLoadCapabilities,
+                               bool AllowCompatibleConfigurationMismatch,
+                               ASTReaderListener *Listener,
+                               bool ValidateDiagnosticOptions);
+
   ASTReadResult ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities);
   ASTReadResult ReadExtensionBlock(ModuleFile &F);
   bool ParseLineTable(ModuleFile &F, const RecordData &Record);
@@ -1268,6 +1297,7 @@ private:
   llvm::iterator_range<PreprocessingRecord::iterator>
   getModulePreprocessedEntities(ModuleFile &Mod) const;
 
+public:
   class ModuleDeclIterator
       : public llvm::iterator_adaptor_base<
             ModuleDeclIterator, const serialization::LocalDeclID *,
@@ -1298,6 +1328,7 @@ private:
   llvm::iterator_range<ModuleDeclIterator>
   getModuleFileLevelDecls(ModuleFile &Mod);
 
+private:
   void PassInterestingDeclsToConsumer();
   void PassInterestingDeclToConsumer(Decl *D);
 
@@ -1633,7 +1664,7 @@ public:
     unsigned Result = 0;
     for (ModuleConstIterator I = ModuleMgr.begin(),
         E = ModuleMgr.end(); I != E; ++I) {
-      Result += (*I)->NumPreprocessedEntities;
+      Result += I->NumPreprocessedEntities;
     }
 
     return Result;
@@ -2188,6 +2219,12 @@ public:
 
   /// \brief Loads comments ranges.
   void ReadComments() override;
+
+  /// Visit all the input files of the given module file.
+  void visitInputFiles(serialization::ModuleFile &MF,
+                       bool IncludeSystem, bool Complain,
+          llvm::function_ref<void(const serialization::InputFile &IF,
+                                  bool isSystem)> Visitor);
 
   bool isProcessingUpdateRecords() { return ProcessingUpdateRecords; }
 };

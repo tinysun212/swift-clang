@@ -1112,8 +1112,12 @@ void ASTDeclReader::VisitObjCPropertyDecl(ObjCPropertyDecl *D) {
       (ObjCPropertyDecl::PropertyAttributeKind)Record.readInt());
   D->setPropertyImplementation(
       (ObjCPropertyDecl::PropertyControl)Record.readInt());
-  D->setGetterName(Record.readDeclarationName().getObjCSelector());
-  D->setSetterName(Record.readDeclarationName().getObjCSelector());
+  DeclarationName GetterName = Record.readDeclarationName();
+  SourceLocation GetterLoc = ReadSourceLocation();
+  D->setGetterName(GetterName.getObjCSelector(), GetterLoc);
+  DeclarationName SetterName = Record.readDeclarationName();
+  SourceLocation SetterLoc = ReadSourceLocation();
+  D->setSetterName(SetterName.getObjCSelector(), SetterLoc);
   D->setGetterMethodDecl(ReadDeclAs<ObjCMethodDecl>());
   D->setSetterMethodDecl(ReadDeclAs<ObjCMethodDecl>());
   D->setPropertyIvarDecl(ReadDeclAs<ObjCIvarDecl>());
@@ -1126,7 +1130,6 @@ void ASTDeclReader::VisitObjCImplDecl(ObjCImplDecl *D) {
 
 void ASTDeclReader::VisitObjCCategoryImplDecl(ObjCCategoryImplDecl *D) {
   VisitObjCImplDecl(D);
-  D->setIdentifier(Record.getIdentifierInfo());
   D->CategoryNameLoc = ReadSourceLocation();
 }
 
@@ -2513,8 +2516,8 @@ static bool isConsumerInterestedIn(ASTContext &Ctx, Decl *D, bool HasBody) {
 
   // An ImportDecl or VarDecl imported from a module will get emitted when
   // we import the relevant module.
-  if ((isa<ImportDecl>(D) || isa<VarDecl>(D)) && Ctx.DeclMustBeEmitted(D) &&
-      D->getImportedOwningModule())
+  if ((isa<ImportDecl>(D) || isa<VarDecl>(D)) && D->getImportedOwningModule() &&
+      Ctx.DeclMustBeEmitted(D))
     return false;
 
   if (isa<FileScopeAsmDecl>(D) || 

@@ -280,11 +280,6 @@ Decl *Parser::ParseObjCAtInterfaceDeclaration(SourceLocation AtLoc,
     T.consumeClose();
     if (T.getCloseLocation().isInvalid())
       return nullptr;
-
-    if (!attrs.empty()) { // categories don't support attributes.
-      Diag(nameLoc, diag::err_objc_no_attributes_on_category);
-      attrs.clear();
-    }
     
     // Next, we need to check for any protocol references.
     assert(LAngleLoc.isInvalid() && "Cannot have already parsed protocols");
@@ -296,16 +291,11 @@ Decl *Parser::ParseObjCAtInterfaceDeclaration(SourceLocation AtLoc,
                                     /*consumeLastToken=*/true))
       return nullptr;
 
-    Decl *CategoryType =
-    Actions.ActOnStartCategoryInterface(AtLoc,
-                                        nameId, nameLoc,
-                                        typeParameterList,
-                                        categoryId, categoryLoc,
-                                        ProtocolRefs.data(),
-                                        ProtocolRefs.size(),
-                                        ProtocolLocs.data(),
-                                        EndProtoLoc);
-    
+    Decl *CategoryType = Actions.ActOnStartCategoryInterface(
+        AtLoc, nameId, nameLoc, typeParameterList, categoryId, categoryLoc,
+        ProtocolRefs.data(), ProtocolRefs.size(), ProtocolLocs.data(),
+        EndProtoLoc, attrs.getList());
+
     if (Tok.is(tok::l_brace))
       ParseObjCClassInstanceVariables(CategoryType, tok::objc_private, AtLoc);
       
@@ -931,7 +921,7 @@ void Parser::ParseObjCPropertyAttribute(ObjCDeclSpec &DS) {
 
       if (IsSetter) {
         DS.setPropertyAttributes(ObjCDeclSpec::DQ_PR_setter);
-        DS.setSetterName(SelIdent);
+        DS.setSetterName(SelIdent, SelLoc);
 
         if (ExpectAndConsume(tok::colon,
                              diag::err_expected_colon_after_setter_name)) {
@@ -940,7 +930,7 @@ void Parser::ParseObjCPropertyAttribute(ObjCDeclSpec &DS) {
         }
       } else {
         DS.setPropertyAttributes(ObjCDeclSpec::DQ_PR_getter);
-        DS.setGetterName(SelIdent);
+        DS.setGetterName(SelIdent, SelLoc);
       }
     } else if (II->isStr("nonnull")) {
       if (DS.getPropertyAttributes() & ObjCDeclSpec::DQ_PR_nullability)

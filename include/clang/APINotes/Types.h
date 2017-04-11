@@ -38,16 +38,6 @@ using llvm::StringRef;
 using llvm::Optional;
 using llvm::None;
 
-/// Describes whether to classify a factory method as an initializer.
-enum class FactoryAsInitKind {
-  /// Infer based on name and type (the default).
-  Infer,
-  /// Treat as a class method.
-  AsClassMethod,
-  /// Treat as an initializer.
-  AsInitializer
-};
-
 /// Opaque context ID used to refer to an Objective-C class or protocol.
 class ContextID {
 public:
@@ -222,12 +212,22 @@ class ObjCContextInfo : public CommonTypeInfo {
   /// Whether this class has designated initializers recorded.
   unsigned HasDesignatedInits : 1;
 
+  unsigned SwiftImportAsNonGenericSpecified : 1;
+  unsigned SwiftImportAsNonGeneric : 1;
+
+  unsigned SwiftObjCMembersSpecified : 1;
+  unsigned SwiftObjCMembers : 1;
+
 public:
   ObjCContextInfo()
     : CommonTypeInfo(),
       HasDefaultNullability(0),
       DefaultNullability(0),
-      HasDesignatedInits(0)
+      HasDesignatedInits(0),
+      SwiftImportAsNonGenericSpecified(false),
+      SwiftImportAsNonGeneric(false),
+      SwiftObjCMembersSpecified(false),
+      SwiftObjCMembers(false)
   { }
 
   /// Determine the default nullability for properties and methods of this
@@ -250,6 +250,31 @@ public:
   bool hasDesignatedInits() const { return HasDesignatedInits; }
   void setHasDesignatedInits(bool value) { HasDesignatedInits = value; }
 
+  Optional<bool> getSwiftImportAsNonGeneric() const {
+    if (SwiftImportAsNonGenericSpecified)
+      return SwiftImportAsNonGeneric;
+    return None;
+  }
+  void setSwiftImportAsNonGeneric(Optional<bool> value) {
+    if (value.hasValue()) {
+      SwiftImportAsNonGenericSpecified = true;
+      SwiftImportAsNonGeneric = value.getValue();
+    } else {
+      SwiftImportAsNonGenericSpecified = false;
+      SwiftImportAsNonGeneric = false;
+    }
+  }
+
+  Optional<bool> getSwiftObjCMembers() const {
+    if (SwiftObjCMembersSpecified)
+      return SwiftObjCMembers;
+    return None;
+  }
+  void setSwiftObjCMembers(Optional<bool> value) {
+    SwiftObjCMembersSpecified = value.hasValue();
+    SwiftObjCMembers = value.hasValue() ? *value : false;
+  }
+
   /// Strip off any information within the class information structure that is
   /// module-local, such as 'audited' flags.
   void stripModuleLocalInfo() {
@@ -259,9 +284,11 @@ public:
 
   friend bool operator==(const ObjCContextInfo &lhs, const ObjCContextInfo &rhs) {
     return static_cast<const CommonTypeInfo &>(lhs) == rhs &&
-           lhs.HasDefaultNullability == rhs.HasDefaultNullability &&
-           lhs.DefaultNullability == rhs.DefaultNullability &&
-           lhs.HasDesignatedInits == rhs.HasDesignatedInits;
+           lhs.getDefaultNullability() == rhs.getDefaultNullability() &&
+           lhs.HasDesignatedInits == rhs.HasDesignatedInits &&
+           lhs.getSwiftImportAsNonGeneric() ==
+             rhs.getSwiftImportAsNonGeneric() &&
+           lhs.getSwiftObjCMembers() == rhs.getSwiftObjCMembers();
   }
 
   friend bool operator!=(const ObjCContextInfo &lhs, const ObjCContextInfo &rhs) {
@@ -278,6 +305,17 @@ public:
       if (auto nullable = rhs.getDefaultNullability()) {
         lhs.setDefaultNullability(*nullable);
       }
+    }
+
+    if (!lhs.SwiftImportAsNonGenericSpecified &&
+        rhs.SwiftImportAsNonGenericSpecified) {
+      lhs.SwiftImportAsNonGenericSpecified = true;
+      lhs.SwiftImportAsNonGeneric = rhs.SwiftImportAsNonGeneric;
+    }
+
+    if (!lhs.SwiftObjCMembersSpecified && rhs.SwiftObjCMembersSpecified) {
+      lhs.SwiftObjCMembersSpecified = true;
+      lhs.SwiftObjCMembers = rhs.SwiftObjCMembers;
     }
 
     lhs.HasDesignatedInits |= rhs.HasDesignatedInits;
@@ -392,6 +430,12 @@ public:
       lhs.SwiftImportAsAccessors = rhs.SwiftImportAsAccessors;
     }
     return lhs;
+  }
+
+  friend bool operator==(const ObjCPropertyInfo &lhs,
+                         const ObjCPropertyInfo &rhs) {
+    return static_cast<const VariableInfo &>(lhs) == rhs &&
+           lhs.getSwiftImportAsAccessors() == rhs.getSwiftImportAsAccessors();
   }
 };
 
@@ -556,30 +600,17 @@ public:
   /// Whether this is a designated initializer of its class.
   unsigned DesignatedInit : 1;
 
-  /// Whether to treat this method as a factory or initializer.
-  unsigned FactoryAsInit : 2;
-
   /// Whether this is a required initializer.
   unsigned Required : 1;
 
   ObjCMethodInfo()
     : FunctionInfo(),
       DesignatedInit(false),
-      FactoryAsInit(static_cast<unsigned>(FactoryAsInitKind::Infer)),
       Required(false) { }
-
-  FactoryAsInitKind getFactoryAsInitKind() const {
-    return static_cast<FactoryAsInitKind>(FactoryAsInit);
-  }
-
-  void setFactoryAsInitKind(FactoryAsInitKind kind) {
-    FactoryAsInit = static_cast<unsigned>(kind);
-  }
 
   friend bool operator==(const ObjCMethodInfo &lhs, const ObjCMethodInfo &rhs) {
     return static_cast<const FunctionInfo &>(lhs) == rhs &&
            lhs.DesignatedInit == rhs.DesignatedInit &&
-           lhs.FactoryAsInit == rhs.FactoryAsInit &&
            lhs.Required == rhs.Required;
   }
 
