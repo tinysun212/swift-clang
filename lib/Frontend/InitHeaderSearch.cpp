@@ -240,8 +240,13 @@ void InitHeaderSearch::AddDefaultCIncludePaths(const llvm::Triple &triple,
 
   // All remaining additions are for system include directories, early exit if
   // we aren't using them.
-  if (!HSOpts.UseStandardSystemIncludes)
-    return;
+  if (!HSOpts.UseStandardSystemIncludes) {
+    if (triple.getEnvironment() == llvm::Triple::Cygnus) {
+      AddPath("/usr/local/include", System, false);
+    } else {
+      return;
+    }
+  }
 
   // Add dirs specified via 'configure --with-c-include-dirs'.
   StringRef CIncludeDirs(C_INCLUDE_DIRS);
