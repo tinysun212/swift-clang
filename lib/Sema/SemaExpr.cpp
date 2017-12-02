@@ -171,9 +171,14 @@ DiagnoseAvailabilityOfDecl(Sema &S, NamedDecl *D, SourceLocation Loc,
   if (AvailabilityResult Result =
           S.ShouldDiagnoseAvailabilityOfDecl(D, &Message)) {
 
-    if (Result == AR_NotYetIntroduced && S.getCurFunctionOrMethodDecl()) {
-      S.getEnclosingFunction()->HasPotentialAvailabilityViolations = true;
-      return;
+    if (Result == AR_NotYetIntroduced) {
+      if (S.getCurFunctionOrMethodDecl()) {
+        S.getEnclosingFunction()->HasPotentialAvailabilityViolations = true;
+        return;
+      } else if (S.getCurBlock() || S.getCurLambda()) {
+        S.getCurFunction()->HasPotentialAvailabilityViolations = true;
+        return;
+      }
     }
 
     const ObjCPropertyDecl *ObjCPDecl = nullptr;
@@ -363,8 +368,18 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
 
     if (getLangOpts().CUDA && !CheckCUDACall(Loc, FD))
       return true;
+  }
 
-    if (diagnoseArgIndependentDiagnoseIfAttrs(FD, Loc))
+  auto getReferencedObjCProp = [](const NamedDecl *D) ->
+                                      const ObjCPropertyDecl * {
+    if (const auto *MD = dyn_cast<ObjCMethodDecl>(D))
+      return MD->findPropertyDecl();
+    return nullptr;
+  };
+  if (const ObjCPropertyDecl *ObjCPDecl = getReferencedObjCProp(D)) {
+    if (diagnoseArgIndependentDiagnoseIfAttrs(ObjCPDecl, Loc))
+      return true;
+  } else if (diagnoseArgIndependentDiagnoseIfAttrs(D, Loc)) {
       return true;
   }
 
@@ -706,8 +721,7 @@ ExprResult Sema::DefaultLvalueConversion(Expr *E) {
   
   // Loading a __weak object implicitly retains the value, so we need a cleanup to 
   // balance that.
-  if (getLangOpts().ObjCAutoRefCount &&
-      E->getType().getObjCLifetime() == Qualifiers::OCL_Weak)
+  if (E->getType().getObjCLifetime() == Qualifiers::OCL_Weak)
     Cleanup.setExprNeedsCleanups(true);
 
   ExprResult Res = ImplicitCastExpr::Create(Context, T, CK_LValueToRValue, E,
@@ -2127,6 +2141,12 @@ Sema::ActOnIdExpression(Scope *S, CXXScopeSpec &SS,
   IdentifierInfo *II = Name.getAsIdentifierInfo();
   SourceLocation NameLoc = NameInfo.getLoc();
 
+  if (II && II->isEditorPlaceholder()) {
+    // FIXME: When typed placeholders are supported we can create a typed
+    // placeholder expression node.
+    return ExprError();
+  }
+
   // C++ [temp.dep.expr]p3:
   //   An id-expression is type-dependent if it contains:
   //     -- an identifier that was declared with a dependent type,
@@ -2510,11 +2530,11 @@ Sema::LookupInObjCMethod(LookupResult &Lookup, Scope *S,
           ObjCIvarRefExpr(IV, IV->getUsageType(SelfExpr.get()->getType()), Loc,
                           IV->getLocation(), SelfExpr.get(), true, true);
 
+      if (IV->getType().getObjCLifetime() == Qualifiers::OCL_Weak) {
+        if (!Diags.isIgnored(diag::warn_arc_repeated_use_of_weak, Loc))
+          recordUseOfEvaluatedWeak(Result);
+      }
       if (getLangOpts().ObjCAutoRefCount) {
-        if (IV->getType().getObjCLifetime() == Qualifiers::OCL_Weak) {
-          if (!Diags.isIgnored(diag::warn_arc_repeated_use_of_weak, Loc))
-            recordUseOfEvaluatedWeak(Result);
-        }
         if (CurContext->isClosure())
           Diag(Loc, diag::warn_implicitly_retains_self)
             << FixItHint::CreateInsertion(Loc, "self->");
@@ -7632,7 +7652,7 @@ Sema::CheckAssignmentConstraints(QualType LHSType, ExprResult &RHS,
       Kind = CK_BitCast;
       Sema::AssignConvertType result = 
         checkObjCPointerTypesForAssignment(*this, LHSType, RHSType);
-      if (getLangOpts().ObjCAutoRefCount &&
+      if (getLangOpts().allowsNonTrivialObjCLifetimeQualifiers() &&
           result == Compatible && 
           !CheckObjCARCUnavailableWeakConversion(OrigLHSType, RHSType))
         result = IncompatibleObjCWeakRef;
@@ -7839,7 +7859,7 @@ Sema::CheckSingleAssignmentConstraints(QualType LHSType, ExprResult &CallerRHS,
       if (RHS.isInvalid())
         return Incompatible;
       Sema::AssignConvertType result = Compatible;
-      if (getLangOpts().ObjCAutoRefCount &&
+      if (getLangOpts().allowsNonTrivialObjCLifetimeQualifiers() &&
           !CheckObjCARCUnavailableWeakConversion(LHSType, RHSType))
         result = IncompatibleObjCWeakRef;
       return result;
@@ -7916,9 +7936,9 @@ Sema::CheckSingleAssignmentConstraints(QualType LHSType, ExprResult &CallerRHS,
     // Check for various Objective-C errors. If we are not reporting
     // diagnostics and just checking for errors, e.g., during overload
     // resolution, return Incompatible to indicate the failure.
-    if (getLangOpts().ObjCAutoRefCount &&
-        CheckObjCARCConversion(SourceRange(), Ty, E, CCK_ImplicitConversion,
-                               Diagnose, DiagnoseCFAudited) != ACR_okay) {
+    if (getLangOpts().allowsNonTrivialObjCLifetimeQualifiers() &&
+        CheckObjCConversion(SourceRange(), Ty, E, CCK_ImplicitConversion,
+                            Diagnose, DiagnoseCFAudited) != ACR_okay) {
       if (!Diagnose)
         return Incompatible;
     }
@@ -9529,16 +9549,17 @@ QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
       if (LHSIsNull && !RHSIsNull) {
         Expr *E = LHS.get();
         if (getLangOpts().ObjCAutoRefCount)
-          CheckObjCARCConversion(SourceRange(), RHSType, E, CCK_ImplicitConversion);
+          CheckObjCConversion(SourceRange(), RHSType, E,
+                              CCK_ImplicitConversion);
         LHS = ImpCastExprToType(E, RHSType,
                                 RPT ? CK_BitCast :CK_CPointerToObjCPointerCast);
       }
       else {
         Expr *E = RHS.get();
         if (getLangOpts().ObjCAutoRefCount)
-          CheckObjCARCConversion(SourceRange(), LHSType, E,
-                                 CCK_ImplicitConversion, /*Diagnose=*/true,
-                                 /*DiagnoseCFAudited=*/false, Opc);
+          CheckObjCConversion(SourceRange(), LHSType, E, CCK_ImplicitConversion,
+                              /*Diagnose=*/true,
+                              /*DiagnoseCFAudited=*/false, Opc);
         RHS = ImpCastExprToType(E, LHSType,
                                 LPT ? CK_BitCast :CK_CPointerToObjCPointerCast);
       }
@@ -10237,7 +10258,10 @@ QualType Sema::CheckAssignmentOperands(Expr *LHSExpr, ExprResult &RHS,
         const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(InnerLHS);
         if (!DRE || DRE->getDecl()->hasAttr<BlocksAttr>())
           checkRetainCycles(LHSExpr, RHS.get());
+      }
 
+      if (LHSType.getObjCLifetime() == Qualifiers::OCL_Strong ||
+          LHSType.isNonWeakInMRRWithObjCWeak(Context)) {
         // It is safe to assign a weak reference into a strong variable.
         // Although this code can still have problems:
         //   id x = self.weakProp;
@@ -10245,11 +10269,13 @@ QualType Sema::CheckAssignmentOperands(Expr *LHSExpr, ExprResult &RHS,
         // we do not warn to warn spuriously when 'x' and 'y' are on separate
         // paths through the function. This should be revisited if
         // -Wrepeated-use-of-weak is made flow-sensitive.
+        // For ObjCWeak only, we do not warn if the assign is to a non-weak
+        // variable, which will be valid for the current autorelease scope.
         if (!Diags.isIgnored(diag::warn_arc_repeated_use_of_weak,
                              RHS.get()->getLocStart()))
           getCurFunction()->markSafeWeakUse(RHS.get());
 
-      } else if (getLangOpts().ObjCAutoRefCount) {
+      } else if (getLangOpts().ObjCAutoRefCount || getLangOpts().ObjCWeak) {
         checkUnsafeExprAssigns(Loc, LHSExpr, RHS.get());
       }
     }
@@ -11628,7 +11654,7 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
                  Context.getLangOpts().OpenCLVersion < 120) {
         // OpenCL v1.1 6.3.h: The logical operator not (!) does not
         // operate on scalar float types.
-        if (!resultType->isIntegerType())
+        if (!resultType->isIntegerType() && !resultType->isPointerType())
           return ExprError(Diag(OpLoc, diag::err_typecheck_unary_expr)
                            << resultType << Input.get()->getSourceRange());
       }
@@ -12377,6 +12403,9 @@ ExprResult Sema::ActOnBlockStmtExpr(SourceLocation CaretLoc,
     DiagnoseInvalidJumps(cast<CompoundStmt>(Body));
 
   BSI->TheDecl->setBody(cast<CompoundStmt>(Body));
+
+  if (Body && getCurFunction()->HasPotentialAvailabilityViolations)
+    DiagnoseUnguardedAvailabilityViolations(BSI->TheDecl);
 
   // Try to apply the named return value optimization. We have to check again
   // if we can do this, though, because blocks keep return statements around
@@ -15382,6 +15411,13 @@ ExprResult Sema::ActOnObjCAvailabilityCheckExpr(
   VersionTuple Version;
   if (Spec != AvailSpecs.end())
     Version = Spec->getVersion();
+
+  // The use of `@available` in the enclosing function should be analyzed to
+  // warn when it's used inappropriately (i.e. not if(@available)).
+  if (getCurFunctionOrMethodDecl())
+    getEnclosingFunction()->HasPotentialAvailabilityViolations = true;
+  else if (getCurBlock() || getCurLambda())
+    getCurFunction()->HasPotentialAvailabilityViolations = true;
 
   return new (Context)
       ObjCAvailabilityCheckExpr(Version, AtLoc, RParen, Context.BoolTy);

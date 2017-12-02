@@ -159,6 +159,12 @@ CodeGenModule::CodeGenModule(ASTContext &C, const HeaderSearchOptions &HSO,
   // CoverageMappingModuleGen object.
   if (CodeGenOpts.CoverageMapping)
     CoverageMapping.reset(new CoverageMappingModuleGen(*this, *CoverageInfo));
+
+  // Record mregparm value now so it is visible through rest of codegen.
+  if (Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86)
+    getModule().addModuleFlag(llvm::Module::Error, "NumRegisterParameters",
+                              CodeGenOpts.NumRegisterParameters);
+
 }
 
 CodeGenModule::~CodeGenModule() {}
@@ -367,9 +373,13 @@ void InstrProfStats::reportDiagnostics(DiagnosticsEngine &Diags,
     if (MainFile.empty())
       MainFile = "<stdin>";
     Diags.Report(diag::warn_profile_data_unprofiled) << MainFile;
-  } else
-    Diags.Report(diag::warn_profile_data_out_of_date) << Visited << Missing
-                                                      << Mismatched;
+  } else {
+    if (Mismatched > 0)
+      Diags.Report(diag::warn_profile_data_out_of_date) << Visited << Mismatched;
+
+    if (Missing > 0)
+      Diags.Report(diag::warn_profile_data_missing) << Visited << Missing;
+  }
 }
 
 void CodeGenModule::Release() {
@@ -417,6 +427,7 @@ void CodeGenModule::Release() {
       (Context.getLangOpts().Modules || !LinkerOptionsMetadata.empty())) {
     EmitModuleLinkOptions();
   }
+
   if (CodeGenOpts.DwarfVersion) {
     // We actually want the latest version when there are conflicts.
     // We can change from Warning to Latest if such mode is supported.

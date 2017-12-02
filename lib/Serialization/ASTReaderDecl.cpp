@@ -125,6 +125,9 @@ namespace clang {
     void ReadObjCDefinitionData(struct ObjCInterfaceDecl::DefinitionData &Data);
     void MergeDefinitionData(ObjCInterfaceDecl *D,
                              struct ObjCInterfaceDecl::DefinitionData &&NewDD);
+    void ReadObjCDefinitionData(struct ObjCProtocolDecl::DefinitionData &Data);
+    void MergeDefinitionData(ObjCProtocolDecl *D,
+                             struct ObjCProtocolDecl::DefinitionData &&NewDD);
 
     static NamedDecl *getAnonymousDeclForMerging(ASTReader &Reader,
                                                  DeclContext *DC,
@@ -1032,18 +1035,8 @@ void ASTDeclReader::VisitObjCIvarDecl(ObjCIvarDecl *IVD) {
   IVD->setSynthesize(synth);
 }
 
-void ASTDeclReader::VisitObjCProtocolDecl(ObjCProtocolDecl *PD) {
-  RedeclarableResult Redecl = VisitRedeclarable(PD);
-  VisitObjCContainerDecl(PD);
-  mergeRedeclarable(PD, Redecl);
-
-  if (Record.readInt()) {
-    // Read the definition.
-    PD->allocateDefinitionData();
-
-    // Set the definition data of the canonical declaration, so other
-    // redeclarations will see it.
-    PD->getCanonicalDecl()->Data = PD->Data;
+void ASTDeclReader::ReadObjCDefinitionData(
+         struct ObjCProtocolDecl::DefinitionData &Data) {
 
     unsigned NumProtoRefs = Record.readInt();
     SmallVector<ObjCProtocolDecl *, 16> ProtoRefs;
@@ -1054,9 +1047,37 @@ void ASTDeclReader::VisitObjCProtocolDecl(ObjCProtocolDecl *PD) {
     ProtoLocs.reserve(NumProtoRefs);
     for (unsigned I = 0; I != NumProtoRefs; ++I)
       ProtoLocs.push_back(ReadSourceLocation());
-    PD->setProtocolList(ProtoRefs.data(), NumProtoRefs, ProtoLocs.data(),
-                        Reader.getContext());
+    Data.ReferencedProtocols.set(ProtoRefs.data(), NumProtoRefs,
+                                 ProtoLocs.data(), Reader.getContext());
+}
 
+void ASTDeclReader::MergeDefinitionData(ObjCProtocolDecl *D,
+         struct ObjCProtocolDecl::DefinitionData &&NewDD) {
+  // FIXME: odr checking?
+}
+
+void ASTDeclReader::VisitObjCProtocolDecl(ObjCProtocolDecl *PD) {
+  RedeclarableResult Redecl = VisitRedeclarable(PD);
+  VisitObjCContainerDecl(PD);
+  mergeRedeclarable(PD, Redecl);
+
+  if (Record.readInt()) {
+    // Read the definition.
+    PD->allocateDefinitionData();
+
+    ReadObjCDefinitionData(PD->data());
+
+    ObjCProtocolDecl *Canon = PD->getCanonicalDecl();
+    if (Canon->Data.getPointer()) {
+      // If we already have a definition, keep the definition invariant and
+      // merge the data.
+      MergeDefinitionData(Canon, std::move(PD->data()));
+      PD->Data = Canon->Data;
+    } else {
+      // Set the definition data of the canonical declaration, so other
+      // redeclarations will see it.
+      PD->getCanonicalDecl()->Data = PD->Data;
+    }
     // Note that we have deserialized a definition.
     Reader.PendingDefinitions.insert(PD);
   } else {
@@ -3534,10 +3555,35 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
   // AST consumer might need to know about, queue it.
   // We don't pass it to the consumer immediately because we may be in recursive
   // loading, and some declarations may still be initializing.
-  if (isConsumerInterestedIn(Context, D, Reader.hasPendingBody()))
-    InterestingDecls.push_back(D);
+  PotentiallyInterestingDecls.push_back(
+      InterestingDecl(D, Reader.hasPendingBody()));
 
   return D;
+}
+
+void ASTReader::PassInterestingDeclsToConsumer() {
+  assert(Consumer);
+
+  if (PassingDeclsToConsumer)
+    return;
+
+  // Guard variable to avoid recursively redoing the process of passing
+  // decls to consumer.
+  SaveAndRestore<bool> GuardPassingDeclsToConsumer(PassingDeclsToConsumer,
+                                                   true);
+
+  // Ensure that we've loaded all potentially-interesting declarations
+  // that need to be eagerly loaded.
+  for (auto ID : EagerlyDeserializedDecls)
+    GetDecl(ID);
+  EagerlyDeserializedDecls.clear();
+
+  while (!PotentiallyInterestingDecls.empty()) {
+    InterestingDecl D = PotentiallyInterestingDecls.front();
+    PotentiallyInterestingDecls.pop_front();
+    if (isConsumerInterestedIn(Context, D.getDecl(), D.hasPendingBody()))
+      PassInterestingDeclToConsumer(D.getDecl());
+  }
 }
 
 void ASTReader::loadDeclUpdateRecords(serialization::DeclID ID, Decl *D) {
@@ -3550,6 +3596,9 @@ void ASTReader::loadDeclUpdateRecords(serialization::DeclID ID, Decl *D) {
     auto UpdateOffsets = std::move(UpdI->second);
     DeclUpdateOffsets.erase(UpdI);
 
+    // FIXME: This call to isConsumerInterestedIn is not safe because
+    // we could be deserializing declarations at the moment. We should
+    // delay calling this in the same way as done in D30793.
     bool WasInteresting = isConsumerInterestedIn(Context, D, false);
     for (auto &FileAndOffset : UpdateOffsets) {
       ModuleFile *F = FileAndOffset.first;
@@ -3571,7 +3620,8 @@ void ASTReader::loadDeclUpdateRecords(serialization::DeclID ID, Decl *D) {
       // we need to hand it off to the consumer.
       if (!WasInteresting &&
           isConsumerInterestedIn(Context, D, Reader.hasPendingBody())) {
-        InterestingDecls.push_back(D);
+        PotentiallyInterestingDecls.push_back(
+            InterestingDecl(D, Reader.hasPendingBody()));
         WasInteresting = true;
       }
     }

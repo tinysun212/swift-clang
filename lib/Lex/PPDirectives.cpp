@@ -30,6 +30,7 @@
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Pragma.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Lex/PTHLexer.h"
 #include "clang/Lex/Token.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -560,7 +561,7 @@ void Preprocessor::SkipExcludedConditionalBlock(SourceLocation IfTokenLoc,
           assert(CurPPLexer->LexingRawMode && "We have to be skipping here!");
           CurPPLexer->LexingRawMode = false;
           IdentifierInfo *IfNDefMacro = nullptr;
-          const bool CondValue = EvaluateDirectiveExpression(IfNDefMacro);
+          const bool CondValue = EvaluateDirectiveExpression(IfNDefMacro).Conditional;
           CurPPLexer->LexingRawMode = true;
           if (Callbacks) {
             const SourceLocation CondEnd = CurPPLexer->getSourceLocation();
@@ -657,7 +658,7 @@ void Preprocessor::PTHSkipExcludedConditionalBlock() {
     // Evaluate the condition of the #elif.
     IdentifierInfo *IfNDefMacro = nullptr;
     CurPTHLexer->ParsingPreprocessorDirective = true;
-    bool ShouldEnter = EvaluateDirectiveExpression(IfNDefMacro);
+    bool ShouldEnter = EvaluateDirectiveExpression(IfNDefMacro).Conditional;
     CurPTHLexer->ParsingPreprocessorDirective = false;
 
     // If this condition is true, enter it!
@@ -752,16 +753,11 @@ Preprocessor::getModuleHeaderToIncludeForDiagnostics(SourceLocation IncLoc,
 }
 
 const FileEntry *Preprocessor::LookupFile(
-    SourceLocation FilenameLoc,
-    StringRef Filename,
-    bool isAngled,
-    const DirectoryLookup *FromDir,
-    const FileEntry *FromFile,
-    const DirectoryLookup *&CurDir,
-    SmallVectorImpl<char> *SearchPath,
+    SourceLocation FilenameLoc, StringRef Filename, bool isAngled,
+    const DirectoryLookup *FromDir, const FileEntry *FromFile,
+    const DirectoryLookup *&CurDir, SmallVectorImpl<char> *SearchPath,
     SmallVectorImpl<char> *RelativePath,
-    ModuleMap::KnownHeader *SuggestedModule,
-    bool SkipCache) {
+    ModuleMap::KnownHeader *SuggestedModule, bool *IsMapped, bool SkipCache) {
   Module *RequestingModule = getModuleForLocation(FilenameLoc);
   bool RequestingModuleIsModuleInterface = !SourceMgr.isInMainFile(FilenameLoc);
 
@@ -819,7 +815,7 @@ const FileEntry *Preprocessor::LookupFile(
     while (const FileEntry *FE = HeaderInfo.LookupFile(
                Filename, FilenameLoc, isAngled, TmpFromDir, TmpCurDir,
                Includers, SearchPath, RelativePath, RequestingModule,
-               SuggestedModule, SkipCache)) {
+               SuggestedModule, /*IsMapped=*/nullptr, SkipCache)) {
       // Keep looking as if this file did a #include_next.
       TmpFromDir = TmpCurDir;
       ++TmpFromDir;
@@ -835,7 +831,7 @@ const FileEntry *Preprocessor::LookupFile(
   // Do a standard file entry lookup.
   const FileEntry *FE = HeaderInfo.LookupFile(
       Filename, FilenameLoc, isAngled, FromDir, CurDir, Includers, SearchPath,
-      RelativePath, RequestingModule, SuggestedModule, SkipCache,
+      RelativePath, RequestingModule, SuggestedModule, IsMapped, SkipCache,
       BuildSystemModule);
   if (FE) {
     if (SuggestedModule && !LangOpts.AsmPreprocessor)
@@ -1783,6 +1779,7 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
   }
 
   // Search include directories.
+  bool IsMapped = false;
   const DirectoryLookup *CurDir;
   SmallString<1024> SearchPath;
   SmallString<1024> RelativePath;
@@ -1801,7 +1798,7 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
       FilenameLoc, LangOpts.MSVCCompat ? NormalizedPath.c_str() : Filename,
       isAngled, LookupFrom, LookupFromFile, CurDir,
       Callbacks ? &SearchPath : nullptr, Callbacks ? &RelativePath : nullptr,
-      &SuggestedModule);
+      &SuggestedModule, &IsMapped);
 
   if (!File) {
     if (Callbacks) {
@@ -1818,7 +1815,7 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
               FilenameLoc,
               LangOpts.MSVCCompat ? NormalizedPath.c_str() : Filename, isAngled,
               LookupFrom, LookupFromFile, CurDir, nullptr, nullptr,
-              &SuggestedModule, /*SkipCache*/ true);
+              &SuggestedModule, &IsMapped, /*SkipCache*/ true);
         }
       }
     }
@@ -1833,8 +1830,7 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
             LangOpts.MSVCCompat ? NormalizedPath.c_str() : Filename, false,
             LookupFrom, LookupFromFile, CurDir,
             Callbacks ? &SearchPath : nullptr,
-            Callbacks ? &RelativePath : nullptr,
-            &SuggestedModule);
+            Callbacks ? &RelativePath : nullptr, &SuggestedModule, &IsMapped);
         if (File) {
           SourceRange Range(FilenameTok.getLocation(), CharEnd);
           Diag(FilenameTok, diag::err_pp_file_not_found_not_fatal) <<
@@ -1856,10 +1852,13 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
   // we've imported or already built.
   bool ShouldEnter = true;
 
+  if (PPOpts->SingleFileParseMode)
+    ShouldEnter = false;
+
   // Determine whether we should try to import the module for this #include, if
   // there is one. Don't do so if precompiled module support is disabled or we
   // are processing this module textually (because we're building the module).
-  if (File && SuggestedModule && getLangOpts().Modules &&
+  if (ShouldEnter && File && SuggestedModule && getLangOpts().Modules &&
       SuggestedModule.getModule()->getTopLevelModuleName() !=
           getLangOpts().CurrentModule) {
     // If this include corresponds to a module but that module is
@@ -1968,7 +1967,7 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
   // Issue a diagnostic if the name of the file on disk has a different case
   // than the one we're about to open.
   const bool CheckIncludePathPortability =
-    File && !File->tryGetRealPathName().empty();
+      !IsMapped && File && !File->tryGetRealPathName().empty();
 
   if (CheckIncludePathPortability) {
     StringRef Name = LangOpts.MSVCCompat ? NormalizedPath.str() : Filename;
@@ -2670,7 +2669,13 @@ void Preprocessor::HandleIfdefDirective(Token &Result, bool isIfndef,
   }
 
   // Should we include the stuff contained by this directive?
-  if (!MI == isIfndef) {
+  if (PPOpts->SingleFileParseMode && !MI) {
+    // In 'single-file-parse mode' undefined identifiers trigger parsing of all
+    // the directive blocks.
+    CurPPLexer->pushConditionalLevel(DirectiveTok.getLocation(),
+                                     /*wasskip*/false, /*foundnonskip*/false,
+                                     /*foundelse*/false);
+  } else if (!MI == isIfndef) {
     // Yes, remember that we are inside a conditional, then lex the next token.
     CurPPLexer->pushConditionalLevel(DirectiveTok.getLocation(),
                                      /*wasskip*/false, /*foundnonskip*/true,
@@ -2692,7 +2697,8 @@ void Preprocessor::HandleIfDirective(Token &IfToken,
   // Parse and evaluate the conditional expression.
   IdentifierInfo *IfNDefMacro = nullptr;
   const SourceLocation ConditionalBegin = CurPPLexer->getSourceLocation();
-  const bool ConditionalTrue = EvaluateDirectiveExpression(IfNDefMacro);
+  const DirectiveEvalResult DER = EvaluateDirectiveExpression(IfNDefMacro);
+  const bool ConditionalTrue = DER.Conditional;
   const SourceLocation ConditionalEnd = CurPPLexer->getSourceLocation();
 
   // If this condition is equivalent to #ifndef X, and if this is the first
@@ -2711,7 +2717,12 @@ void Preprocessor::HandleIfDirective(Token &IfToken,
                   (ConditionalTrue ? PPCallbacks::CVK_True : PPCallbacks::CVK_False));
 
   // Should we include the stuff contained by this directive?
-  if (ConditionalTrue) {
+  if (PPOpts->SingleFileParseMode && DER.IncludedUndefinedIds) {
+    // In 'single-file-parse mode' undefined identifiers trigger parsing of all
+    // the directive blocks.
+    CurPPLexer->pushConditionalLevel(IfToken.getLocation(), /*wasskip*/false,
+                                     /*foundnonskip*/false, /*foundelse*/false);
+  } else if (ConditionalTrue) {
     // Yes, remember that we are inside a conditional, then lex the next token.
     CurPPLexer->pushConditionalLevel(IfToken.getLocation(), /*wasskip*/false,
                                    /*foundnonskip*/true, /*foundelse*/false);
@@ -2772,6 +2783,14 @@ void Preprocessor::HandleElseDirective(Token &Result) {
   if (Callbacks)
     Callbacks->Else(Result.getLocation(), CI.IfLoc);
 
+  if (PPOpts->SingleFileParseMode && !CI.FoundNonSkip) {
+    // In 'single-file-parse mode' undefined identifiers trigger parsing of all
+    // the directive blocks.
+    CurPPLexer->pushConditionalLevel(CI.IfLoc, /*wasskip*/false,
+                                     /*foundnonskip*/false, /*foundelse*/true);
+    return;
+  }
+
   // Finally, skip the rest of the contents of this block.
   SkipExcludedConditionalBlock(CI.IfLoc, /*Foundnonskip*/true,
                                /*FoundElse*/true, Result.getLocation());
@@ -2806,6 +2825,14 @@ void Preprocessor::HandleElifDirective(Token &ElifToken) {
     Callbacks->Elif(ElifToken.getLocation(),
                     SourceRange(ConditionalBegin, ConditionalEnd),
                     PPCallbacks::CVK_NotEvaluated, CI.IfLoc);
+
+  if (PPOpts->SingleFileParseMode && !CI.FoundNonSkip) {
+    // In 'single-file-parse mode' undefined identifiers trigger parsing of all
+    // the directive blocks.
+    CurPPLexer->pushConditionalLevel(ElifToken.getLocation(), /*wasskip*/false,
+                                     /*foundnonskip*/false, /*foundelse*/false);
+    return;
+  }
 
   // Finally, skip the rest of the contents of this block.
   SkipExcludedConditionalBlock(CI.IfLoc, /*Foundnonskip*/true,

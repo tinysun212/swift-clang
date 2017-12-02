@@ -1126,6 +1126,7 @@ static bool HasFeature(const Preprocessor &PP, StringRef Feature) {
       .Case("attribute_overloadable", true)
       .Case("attribute_unavailable_with_message", true)
       .Case("attribute_unused_on_fields", true)
+      .Case("attribute_diagnose_if_objc", true)
       .Case("blocks", LangOpts.Blocks)
       .Case("c_thread_safety_attributes", true)
       .Case("cxx_exceptions", LangOpts.CXXExceptions)
@@ -1424,7 +1425,7 @@ static bool EvaluateHasIncludeCommon(Token &Tok,
   const DirectoryLookup *CurDir;
   const FileEntry *File =
       PP.LookupFile(FilenameLoc, Filename, isAngled, LookupFrom, LookupFromFile,
-                    CurDir, nullptr, nullptr, nullptr);
+                    CurDir, nullptr, nullptr, nullptr, nullptr);
 
   // Get the result value.  A result of true means the file exists.
   return File != nullptr;
@@ -1748,6 +1749,7 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
           return llvm::StringSwitch<bool>(II->getName())
                       .Case("__make_integer_seq", LangOpts.CPlusPlus)
                       .Case("__type_pack_element", LangOpts.CPlusPlus)
+                      .Case("__builtin_available", true)
                       .Default(false);
         }
       });

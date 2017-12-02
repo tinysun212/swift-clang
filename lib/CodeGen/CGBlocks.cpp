@@ -318,6 +318,19 @@ static void initializeForBlockHeader(CodeGenModule &CGM, CGBlockInfo &info,
   elementTypes.push_back(CGM.getBlockDescriptorType());
 }
 
+static QualType getCaptureFieldType(const CodeGenFunction &CGF,
+                                    const BlockDecl::Capture &CI) {
+  const VarDecl *VD = CI.getVariable();
+
+  // If the variable is captured by an enclosing block or lambda expression,
+  // use the type of the capture field.
+  if (CGF.BlockInfo && CI.isNested())
+    return CGF.BlockInfo->getCapture(VD).fieldType();
+  if (auto *FD = CGF.LambdaCaptureFields.lookup(VD))
+    return FD->getType();
+  return VD->getType();
+}
+
 /// Compute the layout of the given block.  Attempts to lay the block
 /// out with minimal space requirements.
 static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
@@ -432,15 +445,7 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
       }
     }
 
-    QualType VT = variable->getType();
-
-    // If the variable is captured by an enclosing block or lambda expression,
-    // use the type of the capture field.
-    if (CGF->BlockInfo && CI.isNested())
-      VT = CGF->BlockInfo->getCapture(variable).fieldType();
-    else if (auto *FD = CGF->LambdaCaptureFields.lookup(variable))
-      VT = FD->getType();
-
+    QualType VT = getCaptureFieldType(*CGF, CI);
     CharUnits size = C.getTypeSizeInChars(VT);
     CharUnits align = C.getDeclAlign(variable);
     
@@ -606,8 +611,8 @@ static void enterBlockScope(CodeGenFunction &CGF, BlockDecl *block) {
     if (capture.isConstant()) continue;
 
     // Ignore objects that aren't destructed.
-    QualType::DestructionKind dtorKind =
-      variable->getType().isDestructedType();
+    QualType VT = getCaptureFieldType(CGF, CI);
+    QualType::DestructionKind dtorKind = VT.isDestructedType();
     if (dtorKind == QualType::DK_none) continue;
 
     CodeGenFunction::Destroyer *destroyer;
@@ -634,7 +639,7 @@ static void enterBlockScope(CodeGenFunction &CGF, BlockDecl *block) {
     if (useArrayEHCleanup) 
       cleanupKind = InactiveNormalAndEHCleanup;
 
-    CGF.pushDestroy(cleanupKind, addr, variable->getType(),
+    CGF.pushDestroy(cleanupKind, addr, VT,
                     destroyer, useArrayEHCleanup);
 
     // Remember where that cleanup was.
@@ -709,12 +714,13 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
   llvm::Constant *blockFn
     = CodeGenFunction(CGM, true).GenerateBlockFunction(CurGD, blockInfo,
                                                        LocalDeclMap,
-                                                       isLambdaConv);
+                                                       isLambdaConv,
+                                                       blockInfo.CanBeGlobal);
   blockFn = llvm::ConstantExpr::getBitCast(blockFn, VoidPtrTy);
 
   // If there is nothing to capture, we can emit this as a global block.
   if (blockInfo.CanBeGlobal)
-    return buildGlobalBlock(CGM, blockInfo, blockFn);
+    return CGM.getAddrOfGlobalBlockIfEmitted(blockInfo.BlockExpression);
 
   // Otherwise, we have to emit this as a local block.
 
@@ -1069,17 +1075,14 @@ CodeGenModule::GetAddrOfGlobalBlock(const BlockExpr *BE,
   computeBlockInfo(*this, nullptr, blockInfo);
 
   // Using that metadata, generate the actual block function.
-  llvm::Constant *blockFn;
   {
     CodeGenFunction::DeclMapTy LocalDeclMap;
-    blockFn = CodeGenFunction(*this).GenerateBlockFunction(GlobalDecl(),
-                                                           blockInfo,
-                                                           LocalDeclMap,
-                                                           false);
+    CodeGenFunction(*this).GenerateBlockFunction(
+        GlobalDecl(), blockInfo, LocalDeclMap,
+        /*IsLambdaConversionToBlock*/ false, /*BuildGlobalBlock*/ true);
   }
-  blockFn = llvm::ConstantExpr::getBitCast(blockFn, VoidPtrTy);
 
-  return buildGlobalBlock(*this, blockInfo, blockFn);
+  return getAddrOfGlobalBlockIfEmitted(BE);
 }
 
 static llvm::Constant *buildGlobalBlock(CodeGenModule &CGM,
@@ -1170,7 +1173,8 @@ llvm::Function *
 CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
                                        const CGBlockInfo &blockInfo,
                                        const DeclMapTy &ldm,
-                                       bool IsLambdaConversionToBlock) {
+                                       bool IsLambdaConversionToBlock,
+                                       bool BuildGlobalBlock) {
   const BlockDecl *blockDecl = blockInfo.getBlockDecl();
 
   CurGD = GD;
@@ -1218,6 +1222,10 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
   llvm::Function *fn = llvm::Function::Create(
       fnLLVMType, llvm::GlobalValue::InternalLinkage, name, &CGM.getModule());
   CGM.SetInternalFunctionAttributes(blockDecl, fn, fnInfo);
+
+  if (BuildGlobalBlock)
+    buildGlobalBlock(CGM, blockInfo,
+                     llvm::ConstantExpr::getBitCast(fn, VoidPtrTy));
 
   // Begin generating the function.
   StartFunction(blockDecl, fnType->getReturnType(), fn, fnInfo, args,

@@ -206,12 +206,28 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   SanitizerMask TrappingKinds = parseSanitizeTrapArgs(D, Args);
   SanitizerMask InvalidTrappingKinds = TrappingKinds & NotAllowedWithTrap;
 
+  // The object size sanitizer should not be enabled at -O0.
+  Arg *OptLevel = Args.getLastArg(options::OPT_O_Group);
+  bool RemoveObjectSizeAtO0 =
+      !OptLevel || OptLevel->getOption().matches(options::OPT_O0);
+
   for (ArgList::const_reverse_iterator I = Args.rbegin(), E = Args.rend();
        I != E; ++I) {
     const auto *Arg = *I;
     if (Arg->getOption().matches(options::OPT_fsanitize_EQ)) {
       Arg->claim();
-      SanitizerMask Add = parseArgValues(D, Arg, true);
+      SanitizerMask Add = parseArgValues(D, Arg, /*AllowGroups=*/true);
+
+      if (RemoveObjectSizeAtO0) {
+        AllRemove |= SanitizerKind::ObjectSize;
+
+        // The user explicitly enabled the object size sanitizer. Warn that
+        // that this does nothing at -O0.
+        if (Add & SanitizerKind::ObjectSize)
+          D.Diag(diag::warn_drv_object_size_disabled_O0)
+              << Arg->getAsString(Args);
+      }
+
       AllAddedKinds |= expandSanitizerGroups(Add);
 
       // Avoid diagnosing any sanitizer which is disabled later.
@@ -282,6 +298,13 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
       (RTTIMode == ToolChain::RM_DisabledImplicitly ||
        RTTIMode == ToolChain::RM_DisabledExplicitly)) {
     Kinds &= ~Vptr;
+  }
+
+  // Disable -fsanitize=vptr if -fsanitize=null is not enabled (the vptr
+  // instrumentation is broken without run-time null checks).
+  if ((Kinds & Vptr) && !(Kinds & Null)) {
+    Kinds &= ~Vptr;
+    D.Diag(diag::warn_drv_disabling_vptr_no_null_check);
   }
 
   // Check that LTO is enabled if we need it.
@@ -574,12 +597,11 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
       }
     }
 
-    if (Arg *A = Args.getLastArg(
-            options::OPT_fsanitize_address_use_after_scope,
-            options::OPT_fno_sanitize_address_use_after_scope)) {
-      AsanUseAfterScope = A->getOption().getID() ==
-                          options::OPT_fsanitize_address_use_after_scope;
-    }
+    AsanUseAfterScope = Args.hasFlag(
+        options::OPT_fsanitize_address_use_after_scope,
+        options::OPT_fno_sanitize_address_use_after_scope, AsanUseAfterScope);
+  } else {
+    AsanUseAfterScope = false;
   }
 
   // Parse -link-cxx-sanitizer flag.

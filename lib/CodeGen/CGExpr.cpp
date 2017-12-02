@@ -545,27 +545,49 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
   if (Ptr->getType()->getPointerAddressSpace())
     return;
 
+  // Don't check pointers to volatile data. The behavior here is implementation-
+  // defined.
+  if (Ty.isVolatileQualified())
+    return;
+
   SanitizerScope SanScope(this);
 
   SmallVector<std::pair<llvm::Value *, SanitizerMask>, 3> Checks;
   llvm::BasicBlock *Done = nullptr;
 
+  // Quickly determine whether we have a pointer to an alloca. It's possible
+  // to skip null checks, and some alignment checks, for these pointers. This
+  // can reduce compile-time significantly.
+  auto PtrToAlloca =
+      dyn_cast<llvm::AllocaInst>(Ptr->stripPointerCastsNoFollowAliases());
+
+  llvm::Value *IsNonNull = nullptr;
+  bool IsGuaranteedNonNull =
+      SkippedChecks.has(SanitizerKind::Null) || PtrToAlloca;
   bool AllowNullPointers = TCK == TCK_DowncastPointer || TCK == TCK_Upcast ||
                            TCK == TCK_UpcastToVirtualBase;
   if ((SanOpts.has(SanitizerKind::Null) || AllowNullPointers) &&
-      !SkippedChecks.has(SanitizerKind::Null)) {
+      !IsGuaranteedNonNull) {
     // The glvalue must not be an empty glvalue.
-    llvm::Value *IsNonNull = Builder.CreateIsNotNull(Ptr);
+    IsNonNull = Builder.CreateIsNotNull(Ptr);
 
-    if (AllowNullPointers) {
-      // When performing pointer casts, it's OK if the value is null.
-      // Skip the remaining checks in that case.
-      Done = createBasicBlock("null");
-      llvm::BasicBlock *Rest = createBasicBlock("not.null");
-      Builder.CreateCondBr(IsNonNull, Rest, Done);
-      EmitBlock(Rest);
-    } else {
-      Checks.push_back(std::make_pair(IsNonNull, SanitizerKind::Null));
+    // The IR builder can constant-fold the null check if the pointer points to
+    // a constant.
+    IsGuaranteedNonNull =
+        IsNonNull == llvm::ConstantInt::getTrue(getLLVMContext());
+
+    // Skip the null check if the pointer is known to be non-null.
+    if (!IsGuaranteedNonNull) {
+      if (AllowNullPointers) {
+        // When performing pointer casts, it's OK if the value is null.
+        // Skip the remaining checks in that case.
+        Done = createBasicBlock("null");
+        llvm::BasicBlock *Rest = createBasicBlock("not.null");
+        Builder.CreateCondBr(IsNonNull, Rest, Done);
+        EmitBlock(Rest);
+      } else {
+        Checks.push_back(std::make_pair(IsNonNull, SanitizerKind::Null));
+      }
     }
   }
 
@@ -597,7 +619,8 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
       AlignVal = getContext().getTypeAlignInChars(Ty).getQuantity();
 
     // The glvalue must be suitably aligned.
-    if (AlignVal) {
+    if (AlignVal > 1 &&
+        (!PtrToAlloca || PtrToAlloca->getAlignment() < AlignVal)) {
       llvm::Value *Align =
           Builder.CreateAnd(Builder.CreatePtrToInt(Ptr, IntPtrTy),
                             llvm::ConstantInt::get(IntPtrTy, AlignVal - 1));
@@ -627,12 +650,24 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
   //    -- the [pointer or glvalue] is used to access a non-static data member
   //       or call a non-static member function
   CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
+  bool HasNullCheck = IsGuaranteedNonNull || IsNonNull;
   if (SanOpts.has(SanitizerKind::Vptr) &&
-      !SkippedChecks.has(SanitizerKind::Vptr) &&
+      !SkippedChecks.has(SanitizerKind::Vptr) && HasNullCheck &&
       (TCK == TCK_MemberAccess || TCK == TCK_MemberCall ||
        TCK == TCK_DowncastPointer || TCK == TCK_DowncastReference ||
        TCK == TCK_UpcastToVirtualBase) &&
       RD && RD->hasDefinition() && RD->isDynamicClass()) {
+    // Ensure that the pointer is non-null before loading it. If there is no
+    // compile-time guarantee, reuse the run-time null check.
+    if (!IsGuaranteedNonNull) {
+      assert(IsNonNull && "Missing run-time null check");
+      if (!Done)
+        Done = createBasicBlock("vptr.null");
+      llvm::BasicBlock *VptrNotNull = createBasicBlock("vptr.not.null");
+      Builder.CreateCondBr(IsNonNull, VptrNotNull, Done);
+      EmitBlock(VptrNotNull);
+    }
+
     // Compute a hash of the mangled name of the type.
     //
     // FIXME: This is not guaranteed to be deterministic! Move to a
@@ -952,10 +987,7 @@ LValue CodeGenFunction::EmitUnsupportedLValue(const Expr *E,
                         E->getType());
 }
 
-bool CodeGenFunction::IsDeclRefOrWrappedCXXThis(const Expr *Obj) {
-  if (isa<DeclRefExpr>(Obj))
-    return true;
-
+bool CodeGenFunction::IsWrappedCXXThis(const Expr *Obj) {
   const Expr *Base = Obj;
   while (!isa<CXXThisExpr>(Base)) {
     // The result of a dynamic_cast can be null.
@@ -986,9 +1018,13 @@ LValue CodeGenFunction::EmitCheckedLValue(const Expr *E, TypeCheckKind TCK) {
     LV = EmitLValue(E);
   if (!isa<DeclRefExpr>(E) && !LV.isBitField() && LV.isSimple()) {
     SanitizerSet SkippedChecks;
-    if (const auto *ME = dyn_cast<MemberExpr>(E))
-      if (IsDeclRefOrWrappedCXXThis(ME->getBase()))
+    if (const auto *ME = dyn_cast<MemberExpr>(E)) {
+      bool IsBaseCXXThis = IsWrappedCXXThis(ME->getBase());
+      if (IsBaseCXXThis)
+        SkippedChecks.set(SanitizerKind::Alignment, true);
+      if (IsBaseCXXThis || isa<DeclRefExpr>(ME->getBase()))
         SkippedChecks.set(SanitizerKind::Null, true);
+    }
     EmitTypeCheck(TCK, E->getExprLoc(), LV.getPointer(),
                   E->getType(), LV.getAlignment(), SkippedChecks);
   }
@@ -2932,9 +2968,12 @@ static llvm::Value *emitArraySubscriptGEP(CodeGenFunction &CGF,
                                           llvm::Value *ptr,
                                           ArrayRef<llvm::Value*> indices,
                                           bool inbounds,
+                                          bool signedIndices,
+                                          SourceLocation loc,
                                     const llvm::Twine &name = "arrayidx") {
   if (inbounds) {
-    return CGF.Builder.CreateInBoundsGEP(ptr, indices, name);
+    return CGF.EmitCheckedInBoundsGEP(
+        ptr, indices, signedIndices, CodeGenFunction::NotSubtraction, loc, name);
   } else {
     return CGF.Builder.CreateGEP(ptr, indices, name);
   }
@@ -2965,8 +3004,9 @@ static QualType getFixedSizeElementType(const ASTContext &ctx,
 }
 
 static Address emitArraySubscriptGEP(CodeGenFunction &CGF, Address addr,
-                                     ArrayRef<llvm::Value*> indices,
+                                     ArrayRef<llvm::Value *> indices,
                                      QualType eltType, bool inbounds,
+                                     bool signedIndices, SourceLocation loc,
                                      const llvm::Twine &name = "arrayidx") {
   // All the indices except that last must be zero.
 #ifndef NDEBUG
@@ -2986,8 +3026,8 @@ static Address emitArraySubscriptGEP(CodeGenFunction &CGF, Address addr,
   CharUnits eltAlign =
     getArrayElementAlign(addr.getAlignment(), indices.back(), eltSize);
 
-  llvm::Value *eltPtr =
-    emitArraySubscriptGEP(CGF, addr.getPointer(), indices, inbounds, name);
+  llvm::Value *eltPtr = emitArraySubscriptGEP(
+      CGF, addr.getPointer(), indices, inbounds, signedIndices, loc, name);
   return Address(eltPtr, eltAlign);
 }
 
@@ -2997,6 +3037,7 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
   // in lexical order (this complexity is, sadly, required by C++17).
   llvm::Value *IdxPre =
       (E->getLHS() == E->getIdx()) ? EmitScalarExpr(E->getIdx()) : nullptr;
+  bool SignedIndices = false;
   auto EmitIdxAfterBase = [&, IdxPre](bool Promote) -> llvm::Value * {
     auto *Idx = IdxPre;
     if (E->getLHS() != E->getIdx()) {
@@ -3006,6 +3047,7 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
 
     QualType IdxTy = E->getIdx()->getType();
     bool IdxSigned = IdxTy->isSignedIntegerOrEnumerationType();
+    SignedIndices |= IdxSigned;
 
     if (SanOpts.has(SanitizerKind::ArrayBounds))
       EmitBoundsCheck(E, E->getBase(), Idx, IdxTy, Accessed);
@@ -3040,7 +3082,8 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     Address Addr = EmitExtVectorElementLValue(LV);
 
     QualType EltType = LV.getType()->castAs<VectorType>()->getElementType();
-    Addr = emitArraySubscriptGEP(*this, Addr, Idx, EltType, /*inbounds*/ true);
+    Addr = emitArraySubscriptGEP(*this, Addr, Idx, EltType, /*inbounds*/ true,
+                                 SignedIndices, E->getExprLoc());
     return MakeAddrLValue(Addr, EltType, LV.getAlignmentSource());
   }
 
@@ -3068,7 +3111,8 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     }
 
     Addr = emitArraySubscriptGEP(*this, Addr, Idx, vla->getElementType(),
-                                 !getLangOpts().isSignedOverflowDefined());
+                                 !getLangOpts().isSignedOverflowDefined(),
+                                 SignedIndices, E->getExprLoc());
 
   } else if (const ObjCObjectType *OIT = E->getType()->getAs<ObjCObjectType>()){
     // Indexing over an interface, as in "NSString *P; P[4];"
@@ -3094,7 +3138,8 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     CharUnits EltAlign =
       getArrayElementAlign(Addr.getAlignment(), Idx, InterfaceSize);
     llvm::Value *EltPtr =
-      emitArraySubscriptGEP(*this, Addr.getPointer(), ScaledIdx, false);
+        emitArraySubscriptGEP(*this, Addr.getPointer(), ScaledIdx, false,
+                              SignedIndices, E->getExprLoc());
     Addr = Address(EltPtr, EltAlign);
 
     // Cast back.
@@ -3119,14 +3164,17 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     Addr = emitArraySubscriptGEP(*this, ArrayLV.getAddress(),
                                  {CGM.getSize(CharUnits::Zero()), Idx},
                                  E->getType(),
-                                 !getLangOpts().isSignedOverflowDefined());
+                                 !getLangOpts().isSignedOverflowDefined(),
+                                 SignedIndices,
+                                 E->getExprLoc());
     AlignSource = ArrayLV.getAlignmentSource();
   } else {
     // The base must be a pointer; emit it with an estimate of its alignment.
     Addr = EmitPointerWithAlignment(E->getBase(), &AlignSource);
     auto *Idx = EmitIdxAfterBase(/*Promote*/true);
     Addr = emitArraySubscriptGEP(*this, Addr, Idx, E->getType(),
-                                 !getLangOpts().isSignedOverflowDefined());
+                                 !getLangOpts().isSignedOverflowDefined(),
+                                 SignedIndices, E->getExprLoc());
   }
 
   LValue LV = MakeAddrLValue(Addr, E->getType(), AlignSource);
@@ -3296,7 +3344,8 @@ LValue CodeGenFunction::EmitOMPArraySectionExpr(const OMPArraySectionExpr *E,
     else
       Idx = Builder.CreateNSWMul(Idx, NumElements);
     EltPtr = emitArraySubscriptGEP(*this, Base, Idx, VLA->getElementType(),
-                                   !getLangOpts().isSignedOverflowDefined());
+                                   !getLangOpts().isSignedOverflowDefined(),
+                                   /*SignedIndices=*/false, E->getExprLoc());
   } else if (const Expr *Array = isSimpleArrayDecayOperand(E->getBase())) {
     // If this is A[i] where A is an array, the frontend will have decayed the
     // base to be a ArrayToPointerDecay implicit cast.  While correct, it is
@@ -3315,13 +3364,15 @@ LValue CodeGenFunction::EmitOMPArraySectionExpr(const OMPArraySectionExpr *E,
     // Propagate the alignment from the array itself to the result.
     EltPtr = emitArraySubscriptGEP(
         *this, ArrayLV.getAddress(), {CGM.getSize(CharUnits::Zero()), Idx},
-        ResultExprTy, !getLangOpts().isSignedOverflowDefined());
+        ResultExprTy, !getLangOpts().isSignedOverflowDefined(),
+        /*SignedIndices=*/false, E->getExprLoc());
     AlignSource = ArrayLV.getAlignmentSource();
   } else {
     Address Base = emitOMPArraySectionBase(*this, E->getBase(), AlignSource,
                                            BaseTy, ResultExprTy, IsLowerBound);
     EltPtr = emitArraySubscriptGEP(*this, Base, Idx, ResultExprTy,
-                                   !getLangOpts().isSignedOverflowDefined());
+                                   !getLangOpts().isSignedOverflowDefined(),
+                                   /*SignedIndices=*/false, E->getExprLoc());
   }
 
   return MakeAddrLValue(EltPtr, ResultExprTy, AlignSource);
@@ -3394,7 +3445,10 @@ LValue CodeGenFunction::EmitMemberExpr(const MemberExpr *E) {
     Address Addr = EmitPointerWithAlignment(BaseExpr, &AlignSource);
     QualType PtrTy = BaseExpr->getType()->getPointeeType();
     SanitizerSet SkippedChecks;
-    if (IsDeclRefOrWrappedCXXThis(BaseExpr) ||
+    bool IsBaseCXXThis = IsWrappedCXXThis(BaseExpr);
+    if (IsBaseCXXThis)
+      SkippedChecks.set(SanitizerKind::Alignment, true);
+    if (IsBaseCXXThis || isa<DeclRefExpr>(BaseExpr) ||
         isa<llvm::ConstantPointerNull>(Addr.getPointer()))
       SkippedChecks.set(SanitizerKind::Null, true);
     EmitTypeCheck(TCK_MemberAccess, E->getExprLoc(), Addr.getPointer(), PtrTy,
@@ -4012,6 +4066,8 @@ LValue CodeGenFunction::EmitBinaryOperatorLValue(const BinaryOperator *E) {
 
     RValue RV = EmitAnyExpr(E->getRHS());
     LValue LV = EmitCheckedLValue(E->getLHS(), TCK_Store);
+    if (RV.isScalar())
+      EmitNullabilityCheck(LV, RV.getScalarVal(), E->getExprLoc());
     EmitStoreThroughLValue(RV, LV);
     return LV;
   }

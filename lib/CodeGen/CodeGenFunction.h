@@ -116,10 +116,11 @@ enum TypeEvaluationKind {
   SANITIZER_CHECK(MulOverflow, mul_overflow, 0)                                \
   SANITIZER_CHECK(NegateOverflow, negate_overflow, 0)                          \
   SANITIZER_CHECK(NullabilityArg, nullability_arg, 0)                          \
-  SANITIZER_CHECK(NullabilityReturn, nullability_return, 0)                    \
+  SANITIZER_CHECK(NullabilityReturn, nullability_return, 1)                    \
   SANITIZER_CHECK(NonnullArg, nonnull_arg, 0)                                  \
-  SANITIZER_CHECK(NonnullReturn, nonnull_return, 0)                            \
+  SANITIZER_CHECK(NonnullReturn, nonnull_return, 1)                            \
   SANITIZER_CHECK(OutOfBounds, out_of_bounds, 0)                               \
+  SANITIZER_CHECK(PointerOverflow, pointer_overflow, 0)                        \
   SANITIZER_CHECK(ShiftOutOfBounds, shift_out_of_bounds, 0)                    \
   SANITIZER_CHECK(SubOverflow, sub_overflow, 0)                                \
   SANITIZER_CHECK(TypeMismatch, type_mismatch, 1)                              \
@@ -1383,6 +1384,17 @@ private:
     return RetValNullabilityPrecondition;
   }
 
+  /// Used to store precise source locations for return statements by the
+  /// runtime return value checks.
+  Address ReturnLocation = Address::invalid();
+
+  /// Check if the return value of this function requires sanitization.
+  bool requiresReturnValueCheck() const {
+    return requiresReturnValueNullabilityCheck() ||
+           (SanOpts.has(SanitizerKind::ReturnsNonnullAttribute) &&
+            CurCodeDecl && CurCodeDecl->getAttr<ReturnsNonNullAttr>());
+  }
+
   llvm::BasicBlock *TerminateLandingPad;
   llvm::BasicBlock *TerminateHandler;
   llvm::BasicBlock *TrapBB;
@@ -1553,7 +1565,8 @@ public:
   llvm::Function *GenerateBlockFunction(GlobalDecl GD,
                                         const CGBlockInfo &Info,
                                         const DeclMapTy &ldm,
-                                        bool IsLambdaConversionToBlock);
+                                        bool IsLambdaConversionToBlock,
+                                        bool BuildGlobalBlock);
 
   llvm::Constant *GenerateCopyHelperFunction(const CGBlockInfo &blockInfo);
   llvm::Constant *GenerateDestroyHelperFunction(const CGBlockInfo &blockInfo);
@@ -1762,7 +1775,7 @@ public:
                           SourceLocation EndLoc);
 
   /// Emit a test that checks if the return value \p RV is nonnull.
-  void EmitReturnValueCheck(llvm::Value *RV, SourceLocation EndLoc);
+  void EmitReturnValueCheck(llvm::Value *RV);
 
   /// EmitStartEHSpec - Emit the start of the exception spec.
   void EmitStartEHSpec(const Decl *D);
@@ -2073,9 +2086,8 @@ public:
   llvm::BlockAddress *GetAddrOfLabel(const LabelDecl *L);
   llvm::BasicBlock *GetIndirectGotoBlock();
 
-  /// Check if \p E is a reference, or a C++ "this" pointer wrapped in value-
-  /// preserving casts.
-  static bool IsDeclRefOrWrappedCXXThis(const Expr *E);
+  /// Check if \p E is a C++ "this" pointer wrapped in value-preserving casts.
+  static bool IsWrappedCXXThis(const Expr *E);
 
   /// EmitNullInitialization - Generate code to set a value of the given type to
   /// null, If the type contains data member pointers, they will be initialized
@@ -3468,6 +3480,22 @@ public:
   /// Given an assignment `*LHS = RHS`, emit a test that checks if \p RHS is
   /// nonnull, if \p LHS is marked _Nonnull.
   void EmitNullabilityCheck(LValue LHS, llvm::Value *RHS, SourceLocation Loc);
+
+  /// An enumeration which makes it easier to specify whether or not an
+  /// operation is a subtraction.
+  enum { NotSubtraction = false, IsSubtraction = true };
+
+  /// Same as IRBuilder::CreateInBoundsGEP, but additionally emits a check to
+  /// detect undefined behavior when the pointer overflow sanitizer is enabled.
+  /// \p SignedIndices indicates whether any of the GEP indices are signed.
+  /// \p IsSubtraction indicates whether the expression used to form the GEP
+  /// is a subtraction.
+  llvm::Value *EmitCheckedInBoundsGEP(llvm::Value *Ptr,
+                                      ArrayRef<llvm::Value *> IdxList,
+                                      bool SignedIndices,
+                                      bool IsSubtraction,
+                                      SourceLocation Loc,
+                                      const Twine &Name = "");
 
   /// \brief Emit a description of a type in a format suitable for passing to
   /// a runtime sanitizer handler.

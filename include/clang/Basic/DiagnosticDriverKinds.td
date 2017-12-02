@@ -92,7 +92,7 @@ def err_drv_compilationdatabase : Error<
 def err_drv_command_signalled : Error<
   "%0 command failed due to signal (use -v to see invocation)">;
 def err_drv_force_crash : Error<
-  "failing because environment variable '%0' is set">;
+  "failing because %select{environment variable 'FORCE_CLANG_DIAGNOSTICS_CRASH' is set|'-gen-reproducer' is used}0">;
 def err_drv_invalid_mfloat_abi : Error<
   "invalid float ABI '%0'">;
 def err_drv_invalid_libcxx_deployment : Error<
@@ -135,6 +135,10 @@ def err_drv_cc_print_options_failure : Error<
     "unable to open CC_PRINT_OPTIONS file: %0">;
 def err_drv_preamble_format : Error<
     "incorrect format for -preamble-bytes=N,END">;
+def warn_invalid_ios_deployment_target : Warning<
+  "invalid iOS deployment version '%0', iOS 10 is the maximum deployment "
+  "target for 32-bit targets">, InGroup<InvalidIOSDeploymentTarget>,
+  DefaultError;
 def err_drv_conflicting_deployment_targets : Error<
   "conflicting deployment targets, both '%0' and '%1' are present in environment">;
 def err_arc_unsupported_on_runtime : Error<
@@ -222,7 +226,13 @@ def warn_drv_enabling_rtti_with_exceptions : Warning<
   InGroup<DiagGroup<"rtti-for-exceptions">>;
 def warn_drv_disabling_vptr_no_rtti_default : Warning<
   "implicitly disabling vptr sanitizer because rtti wasn't enabled">,
-  InGroup<DiagGroup<"auto-disable-vptr-sanitizer">>;
+  InGroup<AutoDisableVptrSanitizer>;
+def warn_drv_disabling_vptr_no_null_check : Warning<
+  "implicitly disabling vptr sanitizer because null checking wasn't enabled">,
+  InGroup<AutoDisableVptrSanitizer>;
+def warn_drv_object_size_disabled_O0 : Warning<
+  "the object size sanitizer has no effect at -O0, but is explicitly enabled: %0">,
+  InGroup<InvalidCommandLineArgument>;
 
 def note_drv_command_failed_diag_msg : Note<
   "diagnostic msg: %0">;

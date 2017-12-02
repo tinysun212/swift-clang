@@ -117,6 +117,7 @@ static void getDarwinDefines(MacroBuilder &Builder, const LangOptions &Opts,
                              VersionTuple &PlatformMinVersion) {
   Builder.defineMacro("__APPLE_CC__", "6000");
   Builder.defineMacro("__APPLE__");
+  Builder.defineMacro("__STDC_NO_THREADS__");
   Builder.defineMacro("OBJC_NEW_PROPERTIES");
   // AddressSanitizer doesn't play well with source fortification, which is on
   // by default on Darwin.
@@ -545,6 +546,8 @@ protected:
     Builder.defineMacro("__ELF__");
     if (Opts.POSIXThreads)
       Builder.defineMacro("_REENTRANT");
+    if (this->HasFloat128)
+      Builder.defineMacro("__FLOAT128__");
   }
 public:
   OpenBSDTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
@@ -552,11 +555,11 @@ public:
     this->TLSSupported = false;
 
       switch (Triple.getArch()) {
-        default:
         case llvm::Triple::x86:
         case llvm::Triple::x86_64:
-        case llvm::Triple::arm:
-        case llvm::Triple::sparc:
+          this->HasFloat128 = true;
+          // FALLTHROUGH
+        default:
           this->MCountName = "__mcount";
           break;
         case llvm::Triple::mips64:
@@ -2246,6 +2249,32 @@ public:
 
   LangAS::ID getOpenCLImageAddrSpace() const override {
     return LangAS::opencl_constant;
+  }
+
+  /// \returns Target specific vtbl ptr address space.
+  unsigned getVtblPtrAddressSpace() const override {
+    // \todo: We currently have address spaces defined in AMDGPU Backend. It
+    // would be nice if we could use it here instead of using bare numbers (same
+    // applies to getDWARFAddressSpace).
+    return 2; // constant.
+  }
+
+  /// \returns If a target requires an address within a target specific address
+  /// space \p AddressSpace to be converted in order to be used, then return the
+  /// corresponding target specific DWARF address space.
+  ///
+  /// \returns Otherwise return None and no conversion will be emitted in the
+  /// DWARF.
+  Optional<unsigned> getDWARFAddressSpace(
+      unsigned AddressSpace) const override {
+    switch (AddressSpace) {
+    case 0: // LLVM Private.
+      return 1; // DWARF Private.
+    case 3: // LLVM Local.
+      return 2; // DWARF Local.
+    default:
+      return None;
+    }
   }
 
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
@@ -5144,6 +5173,8 @@ public:
       default:
         if (Triple.getOS() == llvm::Triple::NetBSD)
           setABI("apcs-gnu");
+        else if (Triple.getOS() == llvm::Triple::OpenBSD)
+          setABI("aapcs-linux");
         else
           setABI("aapcs");
         break;
@@ -5925,7 +5956,8 @@ class AArch64TargetInfo : public TargetInfo {
 public:
   AArch64TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : TargetInfo(Triple), ABI("aapcs") {
-    if (getTriple().getOS() == llvm::Triple::NetBSD) {
+    if (getTriple().getOS() == llvm::Triple::NetBSD ||
+        getTriple().getOS() == llvm::Triple::OpenBSD) {
       WCharType = SignedInt;
 
       // NetBSD apparently prefers consistency across ARM targets to consistency
@@ -7535,7 +7567,11 @@ public:
 
   void setN64ABITypes() {
     setN32N64ABITypes();
-    Int64Type = SignedLong;
+    if (getTriple().getOS() == llvm::Triple::OpenBSD) {
+      Int64Type = SignedLongLong;
+    } else {
+      Int64Type = SignedLong;
+    }
     IntMaxType = Int64Type;
     LongWidth = LongAlign = 64;
     PointerWidth = PointerAlign = 64;
@@ -8574,6 +8610,8 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new LinuxTargetInfo<AArch64leTargetInfo>(Triple, Opts);
     case llvm::Triple::NetBSD:
       return new NetBSDTargetInfo<AArch64leTargetInfo>(Triple, Opts);
+    case llvm::Triple::OpenBSD:
+      return new OpenBSDTargetInfo<AArch64leTargetInfo>(Triple, Opts);
     default:
       return new AArch64leTargetInfo(Triple, Opts);
     }

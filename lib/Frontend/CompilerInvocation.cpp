@@ -1318,6 +1318,10 @@ static InputKind ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       << "ARC migration" << "ObjC migration";
   }
 
+  Opts.IndexStorePath = Args.getLastArgValue(OPT_index_store_path);
+  Opts.IndexIgnoreSystemSymbols = Args.hasArg(OPT_index_ignore_system_symbols);
+  Opts.IndexRecordCodegenName = Args.hasArg(OPT_index_record_codegen_name);
+
   InputKind DashX = IK_None;
   if (const Arg *A = Args.getLastArg(OPT_x)) {
     DashX = llvm::StringSwitch<InputKind>(A->getValue())
@@ -1967,6 +1971,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
       Args.hasArg(OPT_fmodules_decluse) || Opts.ModulesStrictDeclUse;
   Opts.ModulesLocalVisibility =
       Args.hasArg(OPT_fmodules_local_submodule_visibility) || Opts.ModulesTS;
+  Opts.ModulesHashErrorDiags = Args.hasArg(OPT_fmodules_hash_error_diagnostics);
   Opts.ModulesSearchAll = Opts.Modules &&
     !Args.hasArg(OPT_fno_modules_search_all) &&
     Args.hasArg(OPT_fmodules_search_all);
@@ -2066,12 +2071,6 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.DeclSpecKeyword =
       Args.hasFlag(OPT_fdeclspec, OPT_fno_declspec,
                    (Opts.MicrosoftExt || Opts.Borland || Opts.CUDA));
-
-  // For now, we only support local submodule visibility in C++ (because we
-  // heavily depend on the ODR for merging redefinitions).
-  if (Opts.ModulesLocalVisibility && !Opts.CPlusPlus)
-    Diags.Report(diag::err_drv_argument_not_allowed_with)
-        << "-fmodules-local-submodule-visibility" << "C";
 
   if (Arg *A = Args.getLastArg(OPT_faddress_space_map_mangling_EQ)) {
     switch (llvm::StringSwitch<unsigned>(A->getValue())
@@ -2270,11 +2269,56 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.SanitizeAddressFieldPadding =
       getLastArgIntValue(Args, OPT_fsanitize_address_field_padding, 0, Diags);
   Opts.SanitizerBlacklistFiles = Args.getAllArgValues(OPT_fsanitize_blacklist);
+
+  // -fallow-editor-placeholders
+  Opts.AllowEditorPlaceholders = Args.hasArg(OPT_fallow_editor_placeholders);
+}
+
+static bool isStrictlyPreprocessorAction(frontend::ActionKind Action) {
+  switch (Action) {
+  case frontend::ASTDeclList:
+  case frontend::ASTDump:
+  case frontend::ASTPrint:
+  case frontend::ASTView:
+  case frontend::EmitAssembly:
+  case frontend::EmitBC:
+  case frontend::EmitHTML:
+  case frontend::EmitLLVM:
+  case frontend::EmitLLVMOnly:
+  case frontend::EmitCodeGenOnly:
+  case frontend::EmitObj:
+  case frontend::FixIt:
+  case frontend::GenerateModule:
+  case frontend::GenerateModuleInterface:
+  case frontend::GeneratePCH:
+  case frontend::GeneratePTH:
+  case frontend::ParseSyntaxOnly:
+  case frontend::ModuleFileInfo:
+  case frontend::VerifyPCH:
+  case frontend::PluginAction:
+  case frontend::PrintDeclContext:
+  case frontend::RewriteObjC:
+  case frontend::RewriteTest:
+  case frontend::RunAnalysis:
+  case frontend::MigrateSource:
+    return false;
+
+  case frontend::DumpRawTokens:
+  case frontend::DumpTokens:
+  case frontend::InitOnly:
+  case frontend::PrintPreamble:
+  case frontend::PrintPreprocessedInput:
+  case frontend::RewriteMacros:
+  case frontend::RunPreprocessorOnly:
+    return true;
+  }
+  llvm_unreachable("invalid frontend action");
 }
 
 static void ParsePreprocessorArgs(PreprocessorOptions &Opts, ArgList &Args,
                                   FileManager &FileMgr,
-                                  DiagnosticsEngine &Diags) {
+                                  DiagnosticsEngine &Diags,
+                                  frontend::ActionKind Action) {
   using namespace options;
   Opts.ImplicitPCHInclude = Args.getLastArgValue(OPT_include_pch);
   Opts.ImplicitPTHInclude = Args.getLastArgValue(OPT_include_pth);
@@ -2347,6 +2391,12 @@ static void ParsePreprocessorArgs(PreprocessorOptions &Opts, ArgList &Args,
     else
       Opts.ObjCXXARCStandardLibrary = (ObjCXXARCStandardLibraryKind)Library;
   }
+
+  // Always avoid lexing editor placeholders when we're just running the
+  // preprocessor as we never want to emit the
+  // "editor placeholder in source file" error in PP only mode.
+  if (isStrictlyPreprocessorAction(Action))
+    Opts.LexEditorPlaceholders = false;
 }
 
 static void ParsePreprocessorOutputArgs(PreprocessorOutputOptions &Opts,
@@ -2354,45 +2404,10 @@ static void ParsePreprocessorOutputArgs(PreprocessorOutputOptions &Opts,
                                         frontend::ActionKind Action) {
   using namespace options;
 
-  switch (Action) {
-  case frontend::ASTDeclList:
-  case frontend::ASTDump:
-  case frontend::ASTPrint:
-  case frontend::ASTView:
-  case frontend::EmitAssembly:
-  case frontend::EmitBC:
-  case frontend::EmitHTML:
-  case frontend::EmitLLVM:
-  case frontend::EmitLLVMOnly:
-  case frontend::EmitCodeGenOnly:
-  case frontend::EmitObj:
-  case frontend::FixIt:
-  case frontend::GenerateModule:
-  case frontend::GenerateModuleInterface:
-  case frontend::GeneratePCH:
-  case frontend::GeneratePTH:
-  case frontend::ParseSyntaxOnly:
-  case frontend::ModuleFileInfo:
-  case frontend::VerifyPCH:
-  case frontend::PluginAction:
-  case frontend::PrintDeclContext:
-  case frontend::RewriteObjC:
-  case frontend::RewriteTest:
-  case frontend::RunAnalysis:
-  case frontend::MigrateSource:
-    Opts.ShowCPP = 0;
-    break;
-
-  case frontend::DumpRawTokens:
-  case frontend::DumpTokens:
-  case frontend::InitOnly:
-  case frontend::PrintPreamble:
-  case frontend::PrintPreprocessedInput:
-  case frontend::RewriteMacros:
-  case frontend::RunPreprocessorOnly:
+  if (isStrictlyPreprocessorAction(Action))
     Opts.ShowCPP = !Args.hasArg(OPT_dM);
-    break;
-  }
+  else
+    Opts.ShowCPP = 0;
 
   Opts.ShowComments = Args.hasArg(OPT_C);
   Opts.ShowLineMarkers = !Args.hasArg(OPT_P);
@@ -2525,7 +2540,8 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
   // ParsePreprocessorArgs and remove the FileManager
   // parameters from the function and the "FileManager.h" #include.
   FileManager FileMgr(Res.getFileSystemOpts());
-  ParsePreprocessorArgs(Res.getPreprocessorOpts(), Args, FileMgr, Diags);
+  ParsePreprocessorArgs(Res.getPreprocessorOpts(), Args, FileMgr, Diags,
+                        Res.getFrontendOpts().ProgramAction);
   ParsePreprocessorOutputArgs(Res.getPreprocessorOutputOpts(), Args,
                               Res.getFrontendOpts().ProgramAction);
 
@@ -2538,7 +2554,16 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
   return Success;
 }
 
-std::string CompilerInvocation::getModuleHash() const {
+// Some extension diagnostics aren't explicitly mapped and require custom
+// logic in the dianognostic engine to be used, track -pedantic-errors
+static bool isExtHandlingFromDiagsError(DiagnosticsEngine &Diags) {
+  diag::Severity Ext = Diags.getExtensionHandlingBehavior();
+  if (Ext == diag::Severity::Warning && Diags.getWarningsAsErrors())
+    return true;
+  return Ext >= diag::Severity::Error;
+}
+
+std::string CompilerInvocation::getModuleHash(DiagnosticsEngine &Diags) const {
   // Note: For QoI reasons, the things we use as a hash here should all be
   // dumped via the -module-info flag.
   using llvm::hash_code;
@@ -2644,6 +2669,31 @@ std::string CompilerInvocation::getModuleHash() const {
         code = hash_combine(code, statBuf.st_mtime);
     }
   }
+
+  // Check for a couple things (see checkDiagnosticMappings in ASTReader.cpp):
+  //  -Werror: consider all warnings into the hash
+  //  -Werror=something: consider only the specified into the hash
+  //  -pedantic-error
+  if (getLangOpts()->ModulesHashErrorDiags) {
+    bool ConsiderAllWarningsAsErrors = Diags.getWarningsAsErrors();
+    code = hash_combine(code, isExtHandlingFromDiagsError(Diags));
+    for (auto DiagIDMappingPair : Diags.getDiagnosticMappings()) {
+      diag::kind DiagID = DiagIDMappingPair.first;
+      auto CurLevel = Diags.getDiagnosticLevel(DiagID, SourceLocation());
+      if (CurLevel < DiagnosticsEngine::Error && !ConsiderAllWarningsAsErrors)
+        continue; // not significant
+      code = hash_combine(
+          code,
+          Diags.getDiagnosticIDs()->getWarningOptionForDiag(DiagID).str());
+    }
+  }
+
+  // Extend the signature with the enabled sanitizers, if at least one is
+  // enabled. Sanitizers which cannot affect AST generation aren't hashed.
+  SanitizerSet SanHash = LangOpts->Sanitize;
+  SanHash.clear(getPPTransparentSanitizers());
+  if (!SanHash.empty())
+    code = hash_combine(code, SanHash.Mask);
 
   return llvm::APInt(64, code).toString(36, /*Signed=*/false);
 }

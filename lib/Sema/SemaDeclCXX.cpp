@@ -3699,6 +3699,15 @@ Sema::BuildMemInitializer(Decl *ConstructorD,
           if (BaseType.isNull())
             return true;
 
+          TInfo = Context.CreateTypeSourceInfo(BaseType);
+          DependentNameTypeLoc TL =
+              TInfo->getTypeLoc().castAs<DependentNameTypeLoc>();
+          if (!TL.isNull()) {
+            TL.setNameLoc(IdLoc);
+            TL.setElaboratedKeywordLoc(SourceLocation());
+            TL.setQualifierLoc(SS.getWithLocInContext(Context));
+          }
+
           R.clear();
           R.setLookupName(MemberOrBase);
         }
@@ -4332,11 +4341,8 @@ BuildImplicitMemberInitializer(Sema &SemaRef, CXXConstructorDecl *Constructor,
     }
   }
   
-  if (SemaRef.getLangOpts().ObjCAutoRefCount &&
-      FieldBaseElementType->isObjCRetainableType() &&
-      FieldBaseElementType.getObjCLifetime() != Qualifiers::OCL_None &&
-      FieldBaseElementType.getObjCLifetime() != Qualifiers::OCL_ExplicitNone) {
-    // ARC:
+  if (FieldBaseElementType.hasNonTrivialObjCLifetime()) {
+    // ARC and Weak:
     //   Default-initialize Objective-C pointers to NULL.
     CXXMemberInit
       = new (SemaRef.Context) CXXCtorInitializer(SemaRef.Context, Field, 
@@ -7009,8 +7015,7 @@ static bool checkTrivialClassMembers(Sema &S, CXXRecordDecl *RD,
     //   [...] nontrivally ownership-qualified types are [...] not trivially
     //   default constructible, copy constructible, move constructible, copy
     //   assignable, move assignable, or destructible [...]
-    if (S.getLangOpts().ObjCAutoRefCount &&
-        FieldType.hasNonTrivialObjCLifetime()) {
+    if (FieldType.hasNonTrivialObjCLifetime()) {
       if (Diagnose)
         S.Diag(FI->getLocation(), diag::note_nontrivial_objc_ownership)
           << RD << FieldType.getObjCLifetime();
@@ -8162,6 +8167,7 @@ Decl *Sema::ActOnStartNamespaceDef(Scope *NamespcScope,
   
   ProcessDeclAttributeList(DeclRegionScope, Namespc, AttrList);
   ProcessAPINotes(Namespc);
+  AddPragmaAttributes(DeclRegionScope, Namespc);
 
   // FIXME: Should we be merging attributes?
   if (const VisibilityAttr *Attr = Namespc->getAttr<VisibilityAttr>())
@@ -9644,6 +9650,7 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
 
   ProcessDeclAttributeList(S, NewTD, AttrList);
   ProcessAPINotes(NewTD);
+  AddPragmaAttributes(S, NewTD);
 
   CheckTypedefForVariablyModifiedType(S, NewTD);
   Invalid |= NewTD->isInvalidDecl();

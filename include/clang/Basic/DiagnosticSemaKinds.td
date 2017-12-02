@@ -497,7 +497,7 @@ def warn_deprecated_copy_operation : Warning<
   InGroup<Deprecated>, DefaultIgnore;
 def warn_cxx1z_compat_exception_spec_in_signature : Warning<
   "mangled name of %0 will change in C++17 due to non-throwing exception "
-  "specification in function signature">, InGroup<CXX1zCompat>;
+  "specification in function signature">, InGroup<CXX1zCompatMangling>;
 
 def warn_global_constructor : Warning<
   "declaration requires a global constructor">,
@@ -741,6 +741,25 @@ def err_pragma_loop_compatibility : Error<
   "%select{incompatible|duplicate}0 directives '%1' and '%2'">;
 def err_pragma_loop_precedes_nonloop : Error<
   "expected a for, while, or do-while loop to follow '%0'">;
+
+def err_pragma_attribute_matcher_subrule_contradicts_rule : Error<
+  "redundant attribute subject matcher sub-rule '%0'; '%1' already matches "
+  "those declarations">;
+def err_pragma_attribute_matcher_negated_subrule_contradicts_subrule : Error<
+  "negated attribute subject matcher sub-rule '%0' contradicts sub-rule '%1'">;
+def err_pragma_attribute_invalid_matchers : Error<
+  "attribute %0 can't be applied to %1">;
+def err_pragma_attribute_stack_mismatch : Error<
+  "'#pragma clang attribute pop' with no matching '#pragma clang attribute push'">;
+def warn_pragma_attribute_unused : Warning<
+  "unused attribute %0 in '#pragma clang attribute push' region">,
+  InGroup<PragmaClangAttribute>;
+def note_pragma_attribute_region_ends_here : Note<
+  "'#pragma clang attribute push' regions ends here">;
+def err_pragma_attribute_no_pop_eof : Error<"unterminated "
+  "'#pragma clang attribute push' at end of file">;
+def note_pragma_attribute_applied_decl_here : Note<
+  "when applied to this declaration">;
 
 /// Objective-C parser diagnostics
 def err_duplicate_class_def : Error<
@@ -997,6 +1016,8 @@ def warn_auto_synthesizing_protocol_property :Warning<
   "auto property synthesis will not synthesize property %0"
   " declared in protocol %1">,
   InGroup<DiagGroup<"objc-protocol-property-synthesis">>;
+def note_add_synthesize_directive : Note<
+  "add a '@synthesize' directive">;
 def warn_no_autosynthesis_shared_ivar_property : Warning <
   "auto property synthesis will not synthesize property "
   "%0 because it cannot share an ivar with another synthesized property">,
@@ -1152,6 +1173,10 @@ def err_objc_kindof_nonobject : Error<
   "'__kindof' specifier cannot be applied to non-object type %0">;
 def err_objc_kindof_wrong_position : Error<
   "'__kindof' type specifier must precede the declarator">;
+
+def err_objc_method_unsupported_param_ret_type : Error<
+  "%0 %select{parameter|return}1 type is unsupported; "
+  "support for vector types for this target is introduced in %2">;
 
 // C++ declarations
 def err_static_assert_expression_is_not_constant : Error<
@@ -2640,6 +2665,7 @@ def warn_attribute_wrong_decl_type : Warning<
   "|types and namespaces"
   "|Objective-C interfaces"
   "|methods and properties"
+  "|functions, methods, and properties"
   "|struct or union"
   "|struct, union or class"
   "|types"
@@ -2750,12 +2776,17 @@ def warn_partial_availability : Warning<"%0 is only available conditionally">,
 def note_partial_availability_silence : Note<
   "explicitly redeclare %0 to silence this warning">;
 def note_unguarded_available_silence : Note<
-  "enclose %0 in an @available check to silence this warning">;
+  "enclose %0 in %select{an @available|a __builtin_available}1 check to silence"
+  " this warning">;
 def warn_partial_message : Warning<"%0 is partial: %1">,
     InGroup<UnguardedAvailability>, DefaultIgnore;
 def warn_partial_fwdclass_message : Warning<
     "%0 may be partial because the receiver type is unknown">,
     InGroup<UnguardedAvailability>, DefaultIgnore;
+def warn_at_available_unchecked_use : Warning<
+  "%select{@available|__builtin_available}0 does not guard availability here; "
+  "use if (%select{@available|__builtin_available}0) instead">,
+  InGroup<DiagGroup<"unsupported-availability-guard">>;
 
 // Thread Safety Attributes
 def warn_invalid_capability_name : Warning<
@@ -4514,7 +4545,7 @@ def warn_missing_prototype : Warning<
 def note_declaration_not_a_prototype : Note<
   "this declaration is not a prototype; add 'void' to make it a prototype for a zero-parameter function">; 
 def warn_strict_prototypes : Warning<
-  "this %select{function declaration is not|"
+  "this %select{function declaration is not|block declaration is not|"
   "old-style function definition is not preceded by}0 a prototype">,
   InGroup<DiagGroup<"strict-prototypes">>, DefaultIgnore;
 def warn_missing_variable_declarations : Warning<
@@ -4545,6 +4576,8 @@ def err_abi_tag_on_redeclaration : Error<
   "cannot add 'abi_tag' attribute in a redeclaration">;
 def err_new_abi_tag_on_redeclaration : Error<
   "'abi_tag' %0 missing in original declaration">;
+def note_use_ifdef_guards :
+  Note <"unguarded header; consider using #ifdef guards or #pragma once">;
 
 def note_deleted_dtor_no_operator_delete : Note<
   "virtual destructor requires an unambiguous, accessible 'operator delete'">;
@@ -4931,6 +4964,8 @@ def note_protected_by_if_available : Note<
   "jump enters controlled statement of if available">;
 def note_protected_by_vla : Note<
   "jump bypasses initialization of variable length array">;
+def note_protected_by_objc_fast_enumeration : Note<
+  "jump enters Objective-C fast enumeration loop">;
 def note_protected_by_objc_try : Note<
   "jump bypasses initialization of @try block">;
 def note_protected_by_objc_catch : Note<
@@ -8792,6 +8827,13 @@ def ext_equivalent_internal_linkage_decl_in_modules : ExtWarn<
   InGroup<DiagGroup<"modules-ambiguous-internal-linkage">>;
 def note_equivalent_internal_linkage_decl : Note<
   "declared here%select{ in module '%1'|}0">;
+
+def note_redefinition_modules_same_file : Note<
+	"'%0' included multiple times, additional include site in header from module '%1'">;
+def note_redefinition_modules_same_file_modulemap : Note<
+	"consider adding '%0' as part of '%1' definition in">;
+def note_redefinition_include_same_file : Note<
+	"'%0' included multiple times, additional include site here">;
 }
 
 let CategoryName = "Coroutines Issue" in {
@@ -8839,8 +8881,13 @@ def warn_not_a_doxygen_trailing_member_comment : Warning<
 let CategoryName = "Instrumentation Issue" in {
 def warn_profile_data_out_of_date : Warning<
   "profile data may be out of date: of %0 function%s0, %1 %plural{1:has|:have}1"
-  " no data and %2 %plural{1:has|:have}2 mismatched data that will be ignored">,
+  " mismatched data that will be ignored">,
   InGroup<ProfileInstrOutOfDate>;
+def warn_profile_data_missing : Warning<
+  "profile data may be incomplete: of %0 function%s0, %1 %plural{1:has|:have}1"
+  " no data">,
+  InGroup<ProfileInstrMissing>,
+  DefaultIgnore;
 def warn_profile_data_unprofiled : Warning<
   "no profile data available for file \"%0\"">,
   InGroup<ProfileInstrUnprofiled>;

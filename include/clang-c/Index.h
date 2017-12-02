@@ -32,7 +32,7 @@
  * compatible, thus CINDEX_VERSION_MAJOR is expected to remain stable.
  */
 #define CINDEX_VERSION_MAJOR 0
-#define CINDEX_VERSION_MINOR 37
+#define CINDEX_VERSION_MINOR 38
 
 #define CINDEX_VERSION_ENCODE(major, minor) ( \
       ((major) * 10000)                       \
@@ -1228,7 +1228,12 @@ enum CXTranslationUnit_Flags {
    * purposes of an IDE, this is undesirable behavior and as much information
    * as possible should be reported. Use this flag to enable this behavior.
    */
-  CXTranslationUnit_KeepGoing = 0x200
+  CXTranslationUnit_KeepGoing = 0x200,
+
+  /**
+   * \brief Sets the preprocessor in a mode for parsing a single file only.
+   */
+  CXTranslationUnit_SingleFileParse = 0x400
 };
 
 /**
@@ -3974,8 +3979,8 @@ CINDEX_LINKAGE int clang_Cursor_getObjCSelectorIndex(CXCursor);
 CINDEX_LINKAGE int clang_Cursor_isDynamicCall(CXCursor C);
 
 /**
- * \brief Given a cursor pointing to an Objective-C message, returns the CXType
- * of the receiver.
+ * \brief Given a cursor pointing to an Objective-C message or property
+ * reference, or C++ method call, returns the CXType of the receiver.
  */
 CINDEX_LINKAGE CXType clang_Cursor_getReceiverType(CXCursor C);
 
@@ -4042,6 +4047,23 @@ CINDEX_LINKAGE unsigned clang_Cursor_isObjCOptional(CXCursor C);
  * \brief Returns non-zero if the given cursor is a variadic function or method.
  */
 CINDEX_LINKAGE unsigned clang_Cursor_isVariadic(CXCursor C);
+
+/**
+ * \brief Returns non-zero if the given cursor points to a symbol marked with
+ * external_source_symbol attribute.
+ *
+ * \param language If non-NULL, and the attribute is present, will be set to
+ * the 'language' string from the attribute.
+ *
+ * \param definedIn If non-NULL, and the attribute is present, will be set to
+ * the 'definedIn' string from the attribute.
+ *
+ * \param isGenerated If non-NULL, and the attribute is present, will be set to
+ * non-zero if the 'generated_declaration' is set in the attribute.
+ */
+CINDEX_LINKAGE unsigned clang_Cursor_isExternalSymbol(CXCursor C,
+                                       CXString *language, CXString *definedIn,
+                                       unsigned *isGenerated);
 
 /**
  * \brief Given a cursor that represents a declaration, return the associated
@@ -5599,7 +5621,8 @@ typedef enum {
   CXIdxEntityLang_None = 0,
   CXIdxEntityLang_C    = 1,
   CXIdxEntityLang_ObjC = 2,
-  CXIdxEntityLang_CXX  = 3
+  CXIdxEntityLang_CXX  = 3,
+  CXIdxEntityLang_Swift  = 4
 } CXIdxEntityLanguage;
 
 /**

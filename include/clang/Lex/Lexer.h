@@ -480,6 +480,11 @@ public:
     return getCharAndSizeSlowNoWarn(Ptr, Size, LangOpts);
   }
 
+  /// Returns the leading whitespace for line that corresponds to the given
+  /// location \p Loc.
+  static StringRef getIndentationForLine(SourceLocation Loc,
+                                         const SourceManager &SM);
+
   //===--------------------------------------------------------------------===//
   // Internal implementation interfaces.
 private:
@@ -639,6 +644,8 @@ private:
   
   bool IsStartOfConflictMarker(const char *CurPtr);
   bool HandleEndOfConflictMarker(const char *CurPtr);
+
+  bool lexEditorPlaceholder(Token &Result, const char *CurPtr);
 
   bool isCodeCompletionPoint(const char *CurPtr) const;
   void cutOffLexing() { BufferPtr = BufferEnd; }

@@ -1256,6 +1256,7 @@ static CXIdxEntityKind getEntityKindFromSymbolKind(SymbolKind K, SymbolLanguage 
   case SymbolKind::Module:
   case SymbolKind::Macro:
   case SymbolKind::ClassProperty:
+  case SymbolKind::CommentTag:
     return CXIdxEntity_Unexposed;
 
   case SymbolKind::Enum: return CXIdxEntity_Enum;
@@ -1315,7 +1316,7 @@ static CXIdxEntityLanguage getEntityLangFromSymbolLang(SymbolLanguage L) {
   case SymbolLanguage::C: return CXIdxEntityLang_C;
   case SymbolLanguage::ObjC: return CXIdxEntityLang_ObjC;
   case SymbolLanguage::CXX: return CXIdxEntityLang_CXX;
-  case SymbolLanguage::Swift: llvm_unreachable("unexpected Swift symbol language");;
+  case SymbolLanguage::Swift: return CXIdxEntityLang_Swift;
   }
   llvm_unreachable("invalid symbol language");
 }

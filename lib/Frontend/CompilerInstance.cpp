@@ -28,6 +28,8 @@
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Frontend/Utils.h"
 #include "clang/Frontend/VerifyDiagnosticConsumer.h"
+#include "clang/Index/IndexingAction.h"
+#include "clang/Index/IndexingAction.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/PTHManager.h"
 #include "clang/Lex/Preprocessor.h"
@@ -472,7 +474,7 @@ std::string CompilerInstance::getSpecificModuleCachePath() {
   SmallString<256> SpecificModuleCache(getHeaderSearchOpts().ModuleCachePath);
   if (!SpecificModuleCache.empty() && !getHeaderSearchOpts().DisableModuleHash)
     llvm::sys::path::append(SpecificModuleCache,
-                            getInvocation().getModuleHash());
+                            getInvocation().getModuleHash(getDiagnostics()));
   return SpecificModuleCache.str();
 }
 
@@ -880,7 +882,8 @@ bool CompilerInstance::InitializeSourceManager(
                             /*SearchPath=*/nullptr,
                             /*RelativePath=*/nullptr,
                             /*RequestingModule=*/nullptr,
-                            /*SuggestedModule=*/nullptr, /*SkipCache=*/true);
+                            /*SuggestedModule=*/nullptr, /*IsMapped=*/nullptr,
+                            /*SkipCache=*/true);
       // Also add the header to /showIncludes output.
       if (File)
         DepOpts.ShowIncludesPretendHeader = File->getName();
@@ -1110,9 +1113,11 @@ static bool compileModuleImpl(CompilerInstance &ImportingInstance,
   PPOpts.RetainRemappedFileBuffers = true;
     
   Invocation->getDiagnosticOpts().VerifyDiagnostics = 0;
-  assert(ImportingInstance.getInvocation().getModuleHash() ==
-         Invocation->getModuleHash() && "Module hash mismatch!");
-  
+  assert(ImportingInstance.getInvocation().getModuleHash(
+             ImportingInstance.getDiagnostics()) ==
+             Invocation->getModuleHash(ImportingInstance.getDiagnostics()) &&
+         "Module hash mismatch!");
+
   // Construct a compiler instance that will be used to actually create the
   // module.  Since we're sharing a PCMCache,
   // CompilerInstance::CompilerInstance is responsible for finalizing the
@@ -1166,20 +1171,29 @@ static bool compileModuleImpl(CompilerInstance &ImportingInstance,
     SourceMgr.overrideFileContents(ModuleMapFile, std::move(ModuleMapBuffer));
   }
 
+  std::unique_ptr<FrontendAction> CreateModuleAction;
+
   // Construct a module-generating action. Passing through the module map is
   // safe because the FileManager is shared between the compiler instances.
-  GenerateModuleFromModuleMapAction CreateModuleAction(
-      ModMap.getModuleMapFileForUniquing(Module), Module->IsSystem);
+  CreateModuleAction.reset(new GenerateModuleFromModuleMapAction(
+      ModMap.getModuleMapFileForUniquing(Module), Module->IsSystem));
 
   ImportingInstance.getDiagnostics().Report(ImportLoc,
                                             diag::remark_module_build)
     << Module->Name << ModuleFileName;
 
+  if (!FrontendOpts.IndexStorePath.empty()) {
+#if defined(__APPLE__)
+    CreateModuleAction = index::createIndexDataRecordingAction(FrontendOpts,
+                                                 std::move(CreateModuleAction));
+#endif
+  }
+
   // Execute the action to actually build the module in-place. Use a separate
   // thread so that we get a stack large enough.
   const unsigned ThreadStackSize = 8 << 20;
   llvm::CrashRecoveryContext CRC;
-  CRC.RunSafelyOnThread([&]() { Instance.ExecuteAction(CreateModuleAction); },
+  CRC.RunSafelyOnThread([&]() { Instance.ExecuteAction(*CreateModuleAction); },
                         ThreadStackSize);
 
   ImportingInstance.getDiagnostics().Report(ImportLoc,

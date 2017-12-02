@@ -17,6 +17,21 @@
 using namespace clang;
 using namespace index;
 
+static bool isGeneratedDecl(const Decl *D) {
+  if (auto *attr = D->getAttr<ExternalSourceSymbolAttr>()) {
+    return attr->getGeneratedDeclaration();
+  }
+  return false;
+}
+
+bool IndexingContext::shouldIndex(const Decl *D) {
+  return !isGeneratedDecl(D);
+}
+
+const LangOptions &IndexingContext::getLangOpts() const {
+  return Ctx->getLangOpts();
+}
+
 bool IndexingContext::shouldIndexFunctionLocalSymbols() const {
   return IndexOpts.IndexFunctionLocals;
 }
@@ -78,12 +93,7 @@ bool IndexingContext::importedModule(const ImportDecl *ImportD) {
   if (FID.isInvalid())
     return true;
 
-  bool Invalid = false;
-  const SrcMgr::SLocEntry &SEntry = SM.getSLocEntry(FID, &Invalid);
-  if (Invalid || !SEntry.isFile())
-    return true;
-
-  if (SEntry.getFile().getFileCharacteristic() != SrcMgr::C_User) {
+  if (isSystemFile(FID)) {
     switch (IndexOpts.SystemSymbolFilter) {
     case IndexingOptions::SystemSymbolFilterKind::None:
       return true;
@@ -109,6 +119,16 @@ bool IndexingContext::isTemplateImplicitInstantiation(const Decl *D) {
     TKind = FD->getTemplateSpecializationKind();
   } else if (auto *VD = dyn_cast<VarDecl>(D)) {
     TKind = VD->getTemplateSpecializationKind();
+  } else if (const auto *RD = dyn_cast<CXXRecordDecl>(D)) {
+    if (RD->getInstantiatedFromMemberClass())
+      TKind = RD->getTemplateSpecializationKind();
+  } else if (const auto *ED = dyn_cast<EnumDecl>(D)) {
+    if (ED->getInstantiatedFromMemberEnum())
+      TKind = ED->getTemplateSpecializationKind();
+  } else if (isa<FieldDecl>(D) || isa<TypedefNameDecl>(D) ||
+             isa<EnumConstantDecl>(D)) {
+    if (const auto *Parent = dyn_cast<Decl>(D->getDeclContext()))
+      return isTemplateImplicitInstantiation(Parent);
   }
   switch (TKind) {
     case TSK_Undeclared:
@@ -136,6 +156,66 @@ bool IndexingContext::shouldIgnoreIfImplicit(const Decl *D) {
   return true;
 }
 
+void IndexingContext::setSysrootPath(StringRef path) {
+  // Ignore sysroot path if it points to root, otherwise every header will be
+  // treated as system one.
+  if (path == "/")
+    path = StringRef();
+  SysrootPath = path;
+}
+
+bool IndexingContext::isSystemFile(FileID FID) {
+  if (LastFileCheck.first == FID)
+    return LastFileCheck.second;
+
+  auto result = [&](bool res) -> bool {
+    LastFileCheck = { FID, res };
+    return res;
+  };
+
+  bool Invalid = false;
+  const SrcMgr::SLocEntry &SEntry =
+    Ctx->getSourceManager().getSLocEntry(FID, &Invalid);
+  if (Invalid || !SEntry.isFile())
+    return result(false);
+
+  const SrcMgr::FileInfo &FI = SEntry.getFile();
+  if (FI.getFileCharacteristic() != SrcMgr::C_User)
+    return result(true);
+
+  auto *CC = FI.getContentCache();
+  if (!CC)
+    return result(false);
+  auto *FE = CC->OrigEntry;
+  if (!FE)
+    return result(false);
+
+  if (SysrootPath.empty())
+    return result(false);
+
+  // Check if directory is in sysroot so that we can consider system headers
+  // even the headers found via a user framework search path, pointing inside
+  // sysroot.
+  auto dirEntry = FE->getDir();
+  auto pair = DirEntries.insert(std::make_pair(dirEntry, false));
+  bool &isSystemDir = pair.first->second;
+  bool wasInserted = pair.second;
+  if (wasInserted) {
+    isSystemDir = StringRef(dirEntry->getName()).startswith(SysrootPath);
+  }
+  return result(isSystemDir);
+}
+
+static const CXXRecordDecl *
+getDeclContextForTemplateInstationPattern(const Decl *D) {
+  if (const auto *CTSD =
+          dyn_cast<ClassTemplateSpecializationDecl>(D->getDeclContext()))
+    return CTSD->getTemplateInstantiationPattern();
+  else if (const auto *RD = dyn_cast<CXXRecordDecl>(D->getDeclContext()))
+    return RD->getInstantiatedFromMemberClass();
+  return nullptr;
+}
+
 static const Decl *adjustTemplateImplicitInstantiation(const Decl *D) {
   if (const ClassTemplateSpecializationDecl *
       SD = dyn_cast<ClassTemplateSpecializationDecl>(D)) {
@@ -144,6 +224,28 @@ static const Decl *adjustTemplateImplicitInstantiation(const Decl *D) {
     return FD->getTemplateInstantiationPattern();
   } else if (auto *VD = dyn_cast<VarDecl>(D)) {
     return VD->getTemplateInstantiationPattern();
+  } else if (const auto *RD = dyn_cast<CXXRecordDecl>(D)) {
+    return RD->getInstantiatedFromMemberClass();
+  } else if (const auto *ED = dyn_cast<EnumDecl>(D)) {
+    return ED->getInstantiatedFromMemberEnum();
+  } else if (isa<FieldDecl>(D) || isa<TypedefNameDecl>(D)) {
+    const auto *ND = cast<NamedDecl>(D);
+    if (const CXXRecordDecl *Pattern =
+            getDeclContextForTemplateInstationPattern(ND)) {
+      for (const NamedDecl *BaseND : Pattern->lookup(ND->getDeclName())) {
+        if (BaseND->isImplicit())
+          continue;
+        if (BaseND->getKind() == ND->getKind())
+          return BaseND;
+      }
+    }
+  } else if (const auto *ECD = dyn_cast<EnumConstantDecl>(D)) {
+    if (const auto *ED = dyn_cast<EnumDecl>(ECD->getDeclContext())) {
+      if (const EnumDecl *Pattern = ED->getInstantiatedFromMemberEnum()) {
+        for (const NamedDecl *BaseECD : Pattern->lookup(ECD->getDeclName()))
+          return BaseECD;
+      }
+    }
   }
   return nullptr;
 }
@@ -172,6 +274,12 @@ static bool isDeclADefinition(const Decl *D, const DeclContext *ContainerDC, AST
   return false;
 }
 
+/// Whether the given NamedDecl should be skipped because it has no name.
+static bool shouldSkipNamelessDecl(const NamedDecl *ND) {
+  return ND->getDeclName().isEmpty() && !isa<TagDecl>(ND) &&
+         !isa<ObjCCategoryDecl>(ND);
+}
+
 static const Decl *adjustParent(const Decl *Parent) {
   if (!Parent)
     return nullptr;
@@ -186,8 +294,8 @@ static const Decl *adjustParent(const Decl *Parent) {
     } else if (auto RD = dyn_cast<RecordDecl>(Parent)) {
       if (RD->isAnonymousStructOrUnion())
         continue;
-    } else if (auto FD = dyn_cast<FieldDecl>(Parent)) {
-      if (FD->getDeclName().isEmpty())
+    } else if (auto ND = dyn_cast<NamedDecl>(Parent)) {
+      if (shouldSkipNamelessDecl(ND))
         continue;
     }
     return Parent;
@@ -233,6 +341,7 @@ static bool shouldReportOccurrenceForSystemDeclOnlyMode(
       case SymbolRole::RelationReceivedBy:
       case SymbolRole::RelationCalledBy:
       case SymbolRole::RelationContainedBy:
+      case SymbolRole::RelationSpecializationOf:
         return true;
       }
     });
@@ -254,11 +363,9 @@ bool IndexingContext::handleDeclOccurrence(const Decl *D, SourceLocation Loc,
                                            const Expr *OrigE,
                                            const Decl *OrigD,
                                            const DeclContext *ContainerDC) {
-  if (D->isImplicit() && !isa<ObjCMethodDecl>(D))
+  if (D->isImplicit() && !(isa<ObjCMethodDecl>(D) || isa<ObjCIvarDecl>(D)))
     return true;
-  if (!isa<NamedDecl>(D) ||
-      (cast<NamedDecl>(D)->getDeclName().isEmpty() &&
-       !isa<TagDecl>(D) && !isa<ObjCCategoryDecl>(D)))
+  if (!isa<NamedDecl>(D) || shouldSkipNamelessDecl(cast<NamedDecl>(D)))
     return true;
 
   SourceManager &SM = Ctx->getSourceManager();
@@ -272,12 +379,7 @@ bool IndexingContext::handleDeclOccurrence(const Decl *D, SourceLocation Loc,
   if (FID.isInvalid())
     return true;
 
-  bool Invalid = false;
-  const SrcMgr::SLocEntry &SEntry = SM.getSLocEntry(FID, &Invalid);
-  if (Invalid || !SEntry.isFile())
-    return true;
-
-  if (SEntry.getFile().getFileCharacteristic() != SrcMgr::C_User) {
+  if (isSystemFile(FID)) {
     switch (IndexOpts.SystemSymbolFilter) {
     case IndexingOptions::SystemSymbolFilterKind::None:
       return true;

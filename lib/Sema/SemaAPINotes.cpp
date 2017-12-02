@@ -548,6 +548,33 @@ static void ProcessAPINotes(Sema &S, ObjCMethodDecl *D,
 static void ProcessAPINotes(Sema &S, TagDecl *D,
                             const api_notes::TagInfo &info,
                             VersionedInfoMetadata metadata) {
+  if (auto extensibility = info.EnumExtensibility) {
+    using api_notes::EnumExtensibilityKind;
+    bool shouldAddAttribute = (*extensibility != EnumExtensibilityKind::None);
+    handleAPINotedAttribute<EnumExtensibilityAttr>(S, D, shouldAddAttribute,
+                                                   metadata, [&] {
+      EnumExtensibilityAttr::Kind kind;
+      switch (extensibility.getValue()) {
+      case EnumExtensibilityKind::None:
+        llvm_unreachable("remove only");
+      case EnumExtensibilityKind::Open:
+        kind = EnumExtensibilityAttr::Open;
+        break;
+      case EnumExtensibilityKind::Closed:
+        kind = EnumExtensibilityAttr::Closed;
+        break;
+      }
+      return EnumExtensibilityAttr::CreateImplicit(S.Context, kind);
+    });
+  }
+
+  if (auto flagEnum = info.isFlagEnum()) {
+    handleAPINotedAttribute<FlagEnumAttr>(S, D, flagEnum.getValue(), metadata,
+                                          [&] {
+      return FlagEnumAttr::CreateImplicit(S.Context);
+    });
+  }
+
   // Handle common type information.
   ProcessAPINotes(S, D, static_cast<const api_notes::CommonTypeInfo &>(info),
                   metadata);
@@ -622,6 +649,49 @@ static void ProcessAPINotes(Sema &S, ObjCInterfaceDecl *D,
                   metadata);
 }
 
+/// If we're applying API notes with an active, non-default version, and the
+/// versioned API notes have a SwiftName but the declaration normally wouldn't
+/// have one, add a removal attribute to make it clear that the new SwiftName
+/// attribute only applies to the active version of \p D, not to all versions.
+///
+/// This must be run \em before processing API notes for \p D, because otherwise
+/// any existing SwiftName attribute will have been packaged up in a 
+/// SwiftVersionedAttr.
+template <typename SpecificInfo>
+static void maybeAttachUnversionedSwiftName(
+    Sema &S, Decl *D,
+    const api_notes::APINotesReader::VersionedInfo<SpecificInfo> Info) {
+  if (D->hasAttr<SwiftNameAttr>())
+    return;
+  if (!Info.getSelected())
+    return;
+
+  // Is the active slice versioned, and does it set a Swift name?
+  VersionTuple SelectedVersion;
+  SpecificInfo SelectedInfoSlice;
+  std::tie(SelectedVersion, SelectedInfoSlice) = Info[*Info.getSelected()];
+  if (SelectedVersion.empty())
+    return;
+  if (SelectedInfoSlice.SwiftName.empty())
+    return;
+
+  // Does the unversioned slice /not/ set a Swift name?
+  for (const auto &VersionAndInfoSlice : Info) {
+    if (!VersionAndInfoSlice.first.empty())
+      continue;
+    if (!VersionAndInfoSlice.second.SwiftName.empty())
+      return;
+  }
+
+  // Then explicitly call that out with a removal attribute.
+  VersionedInfoMetadata DummyFutureMetadata(VersionTuple(), IsNotActive);
+  handleAPINotedAttribute<SwiftNameAttr>(S, D, /*add*/false,
+                                         DummyFutureMetadata,
+                                         []() -> SwiftNameAttr * {
+    llvm_unreachable("should not try to add an attribute here");
+  });
+}
+
 /// Processes all versions of versioned API notes.
 ///
 /// Just dispatches to the various ProcessAPINotes functions in this file.
@@ -629,6 +699,9 @@ template <typename SpecificDecl, typename SpecificInfo>
 static void ProcessVersionedAPINotes(
     Sema &S, SpecificDecl *D,
     const api_notes::APINotesReader::VersionedInfo<SpecificInfo> Info) {
+
+  maybeAttachUnversionedSwiftName(S, D, Info);
+
   unsigned Selected = Info.getSelected().getValueOr(Info.size());
 
   VersionTuple Version;

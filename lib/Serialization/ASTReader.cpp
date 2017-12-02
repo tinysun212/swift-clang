@@ -290,6 +290,33 @@ static bool checkLanguageOptions(const LangOptions &LangOpts,
     return true;
   }
 
+  // Sanitizer feature mismatches are treated as compatible differences. If
+  // compatible differences aren't allowed, we still only want to check for
+  // mismatches of non-modular sanitizers (the only ones which can affect AST
+  // generation).
+  if (!AllowCompatibleDifferences) {
+    SanitizerMask ModularSanitizers = getPPTransparentSanitizers();
+    SanitizerSet ExistingSanitizers = ExistingLangOpts.Sanitize;
+    SanitizerSet ImportedSanitizers = LangOpts.Sanitize;
+    ExistingSanitizers.clear(ModularSanitizers);
+    ImportedSanitizers.clear(ModularSanitizers);
+    if (ExistingSanitizers.Mask != ImportedSanitizers.Mask) {
+      const std::string Flag = "-fsanitize=";
+      if (Diags) {
+#define SANITIZER(NAME, ID)                                                    \
+  {                                                                            \
+    bool InExistingModule = ExistingSanitizers.has(SanitizerKind::ID);         \
+    bool InImportedModule = ImportedSanitizers.has(SanitizerKind::ID);         \
+    if (InExistingModule != InImportedModule)                                  \
+      Diags->Report(diag::err_pch_targetopt_feature_mismatch)                  \
+          << InExistingModule << (Flag + NAME);                                \
+  }
+#include "clang/Basic/Sanitizers.def"
+      }
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -3616,6 +3643,8 @@ static void updateModuleTimestamp(ModuleFile &MF) {
   if (EC)
     return;
   OS << "Timestamp file\n";
+  OS.close();
+  OS.clear_error(); // Avoid triggering a fatal error.
 }
 
 /// \brief Given a cursor at the start of an AST file, scan ahead and drop the
@@ -7135,31 +7164,6 @@ static void PassObjCImplDeclToConsumer(ObjCImplDecl *ImplD,
     Consumer->HandleInterestingDecl(DeclGroupRef(I));
 
   Consumer->HandleInterestingDecl(DeclGroupRef(ImplD));
-}
-
-void ASTReader::PassInterestingDeclsToConsumer() {
-  assert(Consumer);
-
-  if (PassingDeclsToConsumer)
-    return;
-
-  // Guard variable to avoid recursively redoing the process of passing
-  // decls to consumer.
-  SaveAndRestore<bool> GuardPassingDeclsToConsumer(PassingDeclsToConsumer,
-                                                   true);
-
-  // Ensure that we've loaded all potentially-interesting declarations
-  // that need to be eagerly loaded.
-  for (auto ID : EagerlyDeserializedDecls)
-    GetDecl(ID);
-  EagerlyDeserializedDecls.clear();
-
-  while (!InterestingDecls.empty()) {
-    Decl *D = InterestingDecls.front();
-    InterestingDecls.pop_front();
-
-    PassInterestingDeclToConsumer(D);
-  }
 }
 
 void ASTReader::PassInterestingDeclToConsumer(Decl *D) {

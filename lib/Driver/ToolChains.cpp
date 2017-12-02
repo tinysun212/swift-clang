@@ -37,6 +37,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib> // ::getenv
 #include <system_error>
+#include <sys/utsname.h>
 
 using namespace clang::driver;
 using namespace clang::driver::toolchains;
@@ -510,6 +511,56 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
   }
 }
 
+// Clang-900 specific change that's cherry-picked from the LLVM change r307372:
+static std::string getOSVersion() {
+  struct utsname info;
+
+  if (uname(&info))
+    return "";
+
+  return info.release;
+}
+
+static std::string updateTripleOSVersion(std::string TargetTripleString) {
+  // On darwin, we want to update the version to match that of the target.
+  std::string::size_type DarwinDashIdx = TargetTripleString.find("-darwin");
+  if (DarwinDashIdx != std::string::npos) {
+    TargetTripleString.resize(DarwinDashIdx + strlen("-darwin"));
+    TargetTripleString += getOSVersion();
+    return TargetTripleString;
+  }
+  std::string::size_type MacOSDashIdx = TargetTripleString.find("-macos");
+  if (MacOSDashIdx != std::string::npos) {
+    TargetTripleString.resize(MacOSDashIdx);
+    // Reset the OS to darwin as the OS version from `uname` doesn't use the
+    // macOS version scheme.
+    TargetTripleString += "-darwin";
+    TargetTripleString += getOSVersion();
+  }
+  return TargetTripleString;
+}
+
+/// Returns the most appropriate macOS target version for the current process.
+///
+/// If the macOS SDK version is the same or earlier than the system version,
+/// then the SDK version is returned. Otherwise the system version is returned.
+static std::string getSystemOrSDKMacOSVersion(StringRef MacOSSDKVersion) {
+  unsigned Major, Minor, Micro;
+  llvm::Triple SystemTriple(updateTripleOSVersion(llvm::sys::getProcessTriple()));
+  if (!SystemTriple.isMacOSX())
+    return MacOSSDKVersion;
+  SystemTriple.getMacOSXVersion(Major, Minor, Micro);
+  VersionTuple SystemVersion(Major, Minor, Micro);
+  bool HadExtra;
+  if (!Driver::GetReleaseVersion(MacOSSDKVersion, Major, Minor, Micro,
+                                 HadExtra))
+    return MacOSSDKVersion;
+  VersionTuple SDKVersion(Major, Minor, Micro);
+  if (SDKVersion > SystemVersion)
+    return SystemVersion.getAsString();
+  return MacOSSDKVersion;
+}
+
 void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
   const OptTable &Opts = getDriver().getOpts();
 
@@ -541,6 +592,16 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
   Arg *WatchOSVersion =
       Args.getLastArg(options::OPT_mwatchos_version_min_EQ,
                       options::OPT_mwatchos_simulator_version_min_EQ);
+
+  unsigned Major, Minor, Micro;
+  bool HadExtra;
+
+  // The iOS deployment target that is explicitly specified via a command line
+  // option or an environment variable.
+  std::string ExplicitIOSDeploymentTargetStr;
+
+  if (iOSVersion)
+    ExplicitIOSDeploymentTargetStr = iOSVersion->getAsString(Args);
 
   // Add a macro to differentiate between m(iphone|tv|watch)os-version-min=X.Y and
   // -m(iphone|tv|watch)simulator-version-min=X.Y.
@@ -583,6 +644,10 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
     if (char *env = ::getenv("WATCHOS_DEPLOYMENT_TARGET"))
       WatchOSTarget = env;
 
+    if (!iOSTarget.empty())
+      ExplicitIOSDeploymentTargetStr =
+          std::string("IPHONEOS_DEPLOYMENT_TARGET=") + iOSTarget;
+
     // If there is no command-line argument to specify the Target version and
     // no environment variable defined, see if we can set the default based
     // on -isysroot.
@@ -602,7 +667,7 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
                 SDK.startswith("iPhoneSimulator"))
               iOSTarget = Version;
             else if (SDK.startswith("MacOSX"))
-              OSXTarget = Version;
+              OSXTarget = getSystemOrSDKMacOSVersion(Version);
             else if (SDK.startswith("WatchOS") ||
                      SDK.startswith("WatchSimulator"))
               WatchOSTarget = Version;
@@ -700,8 +765,6 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
     llvm_unreachable("Unable to infer Darwin variant");
 
   // Set the tool chain target information.
-  unsigned Major, Minor, Micro;
-  bool HadExtra;
   if (Platform == MacOS) {
     assert((!iOSVersion && !TvOSVersion && !WatchOSVersion) &&
            "Unknown target platform!");
@@ -717,6 +780,20 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
         HadExtra || Major >= 100 || Minor >= 100 || Micro >= 100)
       getDriver().Diag(diag::err_drv_invalid_version_number)
           << iOSVersion->getAsString(Args);
+    // For 32-bit targets, the deployment target for iOS has to be earlier than
+    // iOS 11.
+    if (getTriple().isArch32Bit() && Major >= 11) {
+      // If the deployment target is explicitly specified, print a diagnostic.
+      if (!ExplicitIOSDeploymentTargetStr.empty()) {
+        getDriver().Diag(diag::warn_invalid_ios_deployment_target)
+            << ExplicitIOSDeploymentTargetStr;
+      // Otherwise, set it to 10.99.99.
+      } else {
+        Major = 10;
+        Minor = 99;
+        Micro = 99;
+      }
+    }
   } else if (Platform == TvOS) {
     if (!Driver::GetReleaseVersion(TvOSVersion->getValue(), Major, Minor,
                                    Micro, HadExtra) || HadExtra ||

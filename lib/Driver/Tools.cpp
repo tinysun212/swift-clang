@@ -962,6 +962,10 @@ arm::FloatABI arm::getARMFloatABI(const ToolChain &TC, const ArgList &Args) {
       }
       break;
 
+    case llvm::Triple::OpenBSD:
+      ABI = FloatABI::Soft;
+      break;
+
     default:
       switch (Triple.getEnvironment()) {
       case llvm::Triple::GNUEABIHF:
@@ -1251,6 +1255,8 @@ void Clang::AddARMTargetArgs(const llvm::Triple &Triple, const ArgList &Args,
     default:
       if (Triple.getOS() == llvm::Triple::NetBSD)
         ABIName = "apcs-gnu";
+      else if (Triple.getOS() == llvm::Triple::OpenBSD)
+        ABIName = "aapcs-linux";
       else
         ABIName = "aapcs";
       break;
@@ -3844,9 +3850,10 @@ ParsePICArgs(const ToolChain &ToolChain, const ArgList &Args) {
   // OpenBSD-specific defaults for PIE
   if (Triple.getOS() == llvm::Triple::OpenBSD) {
     switch (ToolChain.getArch()) {
+    case llvm::Triple::arm:
+    case llvm::Triple::aarch64:
     case llvm::Triple::mips64:
     case llvm::Triple::mips64el:
-    case llvm::Triple::sparcel:
     case llvm::Triple::x86:
     case llvm::Triple::x86_64:
       IsPICLevelTwo = false; // "-fpie"
@@ -3854,6 +3861,7 @@ ParsePICArgs(const ToolChain &ToolChain, const ArgList &Args) {
 
     case llvm::Triple::ppc:
     case llvm::Triple::sparc:
+    case llvm::Triple::sparcel:
     case llvm::Triple::sparcv9:
       IsPICLevelTwo = true; // "-fPIE"
       break;
@@ -4478,6 +4486,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (!Args.hasFlag(options::OPT_fstrict_return, options::OPT_fno_strict_return,
                     true))
     CmdArgs.push_back("-fno-strict-return");
+  if (Args.hasFlag(options::OPT_fallow_editor_placeholders,
+                   options::OPT_fno_allow_editor_placeholders, false))
+    CmdArgs.push_back("-fallow-editor-placeholders");
   if (Args.hasFlag(options::OPT_fstrict_vtable_pointers,
                    options::OPT_fno_strict_vtable_pointers,
                    false))
@@ -5105,6 +5116,25 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     Args.AddLastArg(CmdArgs, options::OPT_objcmt_ns_nonatomic_iosonly);
     Args.AddLastArg(CmdArgs, options::OPT_objcmt_migrate_designated_init);
     Args.AddLastArg(CmdArgs, options::OPT_objcmt_whitelist_dir_path);
+  }
+
+  if (Args.hasArg(options::OPT_index_store_path)) {
+    Args.AddLastArg(CmdArgs, options::OPT_index_store_path);
+    Args.AddLastArg(CmdArgs, options::OPT_index_ignore_system_symbols);
+    Args.AddLastArg(CmdArgs, options::OPT_index_record_codegen_name);
+
+    // If '-o' is passed along with '-fsyntax-only' pass it along the cc1
+    // invocation so that the index action knows what the out file is.
+    if (isa<CompileJobAction>(JA) && JA.getType() == types::TY_Nothing) {
+      Args.AddLastArg(CmdArgs, options::OPT_o);
+    }
+  }
+
+  if (const char *IdxStorePath = ::getenv("CLANG_PROJECT_INDEX_PATH")) {
+    CmdArgs.push_back("-index-store-path");
+    CmdArgs.push_back(IdxStorePath);
+    CmdArgs.push_back("-index-ignore-system-symbols");
+    CmdArgs.push_back("-index-record-codegen-name");
   }
 
   // Add preprocessing options like -I, -D, etc. if we are using the
@@ -8537,6 +8567,10 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // more information.
   ArgStringList CmdArgs;
 
+  Args.ClaimAllArgs(options::OPT_index_store_path);
+  Args.ClaimAllArgs(options::OPT_index_ignore_system_symbols);
+  Args.ClaimAllArgs(options::OPT_index_record_codegen_name);
+
   /// Hack(tm) to ignore linking errors when we are doing ARC migration.
   if (Args.hasArg(options::OPT_ccc_arcmt_check,
                   options::OPT_ccc_arcmt_migrate)) {
@@ -8947,12 +8981,12 @@ void openbsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("__start");
   }
 
+  CmdArgs.push_back("--eh-frame-hdr");
   if (Args.hasArg(options::OPT_static)) {
     CmdArgs.push_back("-Bstatic");
   } else {
     if (Args.hasArg(options::OPT_rdynamic))
       CmdArgs.push_back("-export-dynamic");
-    CmdArgs.push_back("--eh-frame-hdr");
     CmdArgs.push_back("-Bdynamic");
     if (Args.hasArg(options::OPT_shared)) {
       CmdArgs.push_back("-shared");

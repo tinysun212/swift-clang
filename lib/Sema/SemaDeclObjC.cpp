@@ -984,6 +984,7 @@ ActOnStartClassInterface(Scope *S, SourceLocation AtInterfaceLoc,
   if (AttrList)
     ProcessDeclAttributeList(TUScope, IDecl, AttrList);
   ProcessAPINotes(IDecl);
+  AddPragmaAttributes(TUScope, IDecl);
 
   if (PrevIDecl) {
     // Class already seen. Was it a definition?
@@ -1179,7 +1180,8 @@ Sema::ActOnStartProtocolInterface(SourceLocation AtProtoInterfaceLoc,
   if (AttrList)
     ProcessDeclAttributeList(TUScope, PDecl, AttrList);
   ProcessAPINotes(PDecl);
-  
+  AddPragmaAttributes(TUScope, PDecl);
+
   // Merge attributes from previous declarations.
   if (PrevDecl)
     mergeDeclAttributes(PDecl, PrevDecl);
@@ -1711,7 +1713,8 @@ Sema::ActOnForwardProtocolDeclaration(SourceLocation AtProtocolLoc,
     if (attrList)
       ProcessDeclAttributeList(TUScope, PDecl, attrList);
     ProcessAPINotes(PDecl);
-    
+    AddPragmaAttributes(TUScope, PDecl);
+
     if (PrevDecl)
       mergeDeclAttributes(PDecl, PrevDecl);
 
@@ -1810,6 +1813,7 @@ ActOnStartCategoryInterface(SourceLocation AtInterfaceLoc,
 
   if (AttrList)
     ProcessDeclAttributeList(TUScope, CDecl, AttrList);
+  AddPragmaAttributes(TUScope, CDecl);
 
   CheckObjCDeclScope(CDecl);
   return ActOnObjCContainerStartDefinition(CDecl);
@@ -1851,10 +1855,6 @@ Decl *Sema::ActOnStartCategoryImplementation(
 
   // FIXME: PushOnScopeChains?
   CurContext->addDecl(CDecl);
-
-  // If the interface is deprecated/unavailable, warn/error about it.
-  if (IDecl)
-    DiagnoseUseOfDecl(IDecl, ClassLoc);
 
   // If the interface has the objc_runtime_visible attribute, we
   // cannot implement a category for it.
@@ -1959,6 +1959,7 @@ Decl *Sema::ActOnStartClassImplementation(
                                       ClassName, /*typeParamList=*/nullptr,
                                       /*PrevDecl=*/nullptr, ClassLoc,
                                       true);
+    AddPragmaAttributes(TUScope, IDecl);
     IDecl->startDefinition();
     if (SDecl) {
       IDecl->setSuperClass(Context.getTrivialTypeSourceInfo(
@@ -4312,6 +4313,49 @@ static void mergeInterfaceMethodToImpl(Sema &S,
   }
 }
 
+/// Verify that the method parameters/return value have types that are supported
+/// by the x86 target.
+static void checkObjCMethodX86VectorTypes(Sema &SemaRef,
+                                          const ObjCMethodDecl *Method) {
+  assert(SemaRef.getASTContext().getTargetInfo().getTriple().getArch() ==
+             llvm::Triple::x86 &&
+         "x86-specific check invoked for a different target");
+  SourceLocation Loc;
+  QualType T;
+  for (const ParmVarDecl *P : Method->parameters()) {
+    if (P->getType()->isVectorType()) {
+      Loc = P->getLocStart();
+      T = P->getType();
+      break;
+    }
+  }
+  if (Loc.isInvalid()) {
+    if (Method->getReturnType()->isVectorType()) {
+      Loc = Method->getReturnTypeSourceRange().getBegin();
+      T = Method->getReturnType();
+    } else
+      return;
+  }
+
+  // Vector parameters/return values are not supported by objc_msgSend on x86 in
+  // iOS < 9 and macOS < 10.11.
+  const auto &Triple = SemaRef.getASTContext().getTargetInfo().getTriple();
+  VersionTuple AcceptedInVersion;
+  if (Triple.getOS() == llvm::Triple::IOS)
+    AcceptedInVersion = VersionTuple(/*Major=*/9);
+  else if (Triple.isMacOSX())
+    AcceptedInVersion = VersionTuple(/*Major=*/10, /*Minor=*/11);
+  else
+    return;
+  if (SemaRef.getASTContext().getTargetInfo().getPlatformMinVersion() >=
+      AcceptedInVersion)
+    return;
+  SemaRef.Diag(Loc, diag::err_objc_method_unsupported_param_ret_type)
+      << T << (Method->getReturnType()->isVectorType() ? /*return value*/ 1
+                                                       : /*parameter*/ 0)
+      << (Triple.isMacOSX() ? "macOS 10.11" : "iOS 9");
+}
+
 Decl *Sema::ActOnMethodDeclaration(
     Scope *S,
     SourceLocation MethodLoc, SourceLocation EndLoc,
@@ -4404,6 +4448,7 @@ Decl *Sema::ActOnMethodDeclaration(
     // Apply the attributes to the parameter.
     ProcessDeclAttributeList(TUScope, Param, ArgInfo[i].ArgAttrs);
     ProcessAPINotes(Param);
+    AddPragmaAttributes(TUScope, Param);
 
     if (Param->hasAttr<BlocksAttr>()) {
       Diag(Param->getLocation(), diag::err_block_on_nonlocal);
@@ -4435,6 +4480,7 @@ Decl *Sema::ActOnMethodDeclaration(
   if (AttrList)
     ProcessDeclAttributeList(TUScope, ObjCMethod, AttrList);
   ProcessAPINotes(ObjCMethod);
+  AddPragmaAttributes(TUScope, ObjCMethod);
 
   // Add the method now.
   const ObjCMethodDecl *PrevMethod = nullptr;
@@ -4532,6 +4578,10 @@ Decl *Sema::ActOnMethodDeclaration(
         !ObjCMethod->getReturnType()->isObjCIndependentClassType())
       ObjCMethod->SetRelatedResultType();
   }
+
+  if (MethodDefinition &&
+      Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86)
+    checkObjCMethodX86VectorTypes(*this, ObjCMethod);
 
   ActOnDocumentableDecl(ObjCMethod);
 

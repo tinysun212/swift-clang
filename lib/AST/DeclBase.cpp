@@ -403,6 +403,27 @@ bool Decl::isExported() const {
   return false;
 }
 
+ExternalSourceSymbolAttr *Decl::getExternalSourceSymbolAttr() const {
+  const Decl *Definition = nullptr;
+  if (auto ID = dyn_cast<ObjCInterfaceDecl>(this)) {
+    Definition = ID->getDefinition();
+  } else if (auto PD = dyn_cast<ObjCProtocolDecl>(this)) {
+    Definition = PD->getDefinition();
+  } else if (auto TD = dyn_cast<TagDecl>(this)) {
+    Definition = TD->getDefinition();
+  }
+  if (!Definition)
+    Definition = this;
+
+  if (auto *attr = Definition->getAttr<ExternalSourceSymbolAttr>())
+    return attr;
+  if (auto *dcd = dyn_cast<Decl>(getDeclContext())) {
+    return dcd->getAttr<ExternalSourceSymbolAttr>();
+  }
+
+  return nullptr;
+}
+
 bool Decl::hasDefiningAttr() const {
   return hasAttr<AliasAttr>() || hasAttr<IFuncAttr>();
 }
@@ -413,6 +434,19 @@ const Attr *Decl::getDefiningAttr() const {
   if (IFuncAttr *IFA = getAttr<IFuncAttr>())
     return IFA;
   return nullptr;
+}
+
+StringRef getRealizedPlatform(const AvailabilityAttr *A,
+                              const ASTContext &Context) {
+  // Check if this is an App Extension "platform", and if so chop off
+  // the suffix for matching with the actual platform.
+  StringRef RealizedPlatform = A->getPlatform()->getName();
+  if (!Context.getLangOpts().AppExt)
+    return RealizedPlatform;
+  size_t suffix = RealizedPlatform.rfind("_app_extension");
+  if (suffix != StringRef::npos)
+    return RealizedPlatform.slice(0, suffix);
+  return RealizedPlatform;
 }
 
 /// \brief Determine the availability of the given declaration based on
@@ -434,20 +468,11 @@ static AvailabilityResult CheckAvailability(ASTContext &Context,
   if (EnclosingVersion.empty())
     return AR_Available;
 
-  // Check if this is an App Extension "platform", and if so chop off
-  // the suffix for matching with the actual platform.
   StringRef ActualPlatform = A->getPlatform()->getName();
-  StringRef RealizedPlatform = ActualPlatform;
-  if (Context.getLangOpts().AppExt) {
-    size_t suffix = RealizedPlatform.rfind("_app_extension");
-    if (suffix != StringRef::npos)
-      RealizedPlatform = RealizedPlatform.slice(0, suffix);
-  }
-
   StringRef TargetPlatform = Context.getTargetInfo().getPlatformName();
 
   // Match the platform name.
-  if (RealizedPlatform != TargetPlatform)
+  if (getRealizedPlatform(A, Context) != TargetPlatform)
     return AR_Available;
 
   StringRef PrettyPlatformName
@@ -565,6 +590,20 @@ AvailabilityResult Decl::getAvailability(std::string *Message,
   if (Message)
     Message->swap(ResultMessage);
   return Result;
+}
+
+VersionTuple Decl::getVersionIntroduced() const {
+  const ASTContext &Context = getASTContext();
+  StringRef TargetPlatform = Context.getTargetInfo().getPlatformName();
+  for (const auto *A : attrs()) {
+    if (const auto *Availability = dyn_cast<AvailabilityAttr>(A)) {
+      if (getRealizedPlatform(Availability, Context) != TargetPlatform)
+        continue;
+      if (!Availability->getIntroduced().empty())
+        return Availability->getIntroduced();
+    }
+  }
+  return VersionTuple();
 }
 
 bool Decl::canBeWeakImported(bool &IsDefinition) const {

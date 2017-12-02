@@ -3286,12 +3286,14 @@ clang_parseTranslationUnit_Impl(CXIndex CIdx, const char *source_filename,
       options & CXTranslationUnit_CreatePreambleOnFirstParse;
   // FIXME: Add a flag for modules.
   TranslationUnitKind TUKind
-    = (options & CXTranslationUnit_Incomplete)? TU_Prefix : TU_Complete;
+    = (options & (CXTranslationUnit_Incomplete |
+                  CXTranslationUnit_SingleFileParse))? TU_Prefix : TU_Complete;
   bool CacheCodeCompletionResults
     = options & CXTranslationUnit_CacheCompletionResults;
   bool IncludeBriefCommentsInCodeCompletion
     = options & CXTranslationUnit_IncludeBriefCommentsInCodeCompletion;
   bool SkipFunctionBodies = options & CXTranslationUnit_SkipFunctionBodies;
+  bool SingleFileParse = options & CXTranslationUnit_SingleFileParse;
   bool ForSerialization = options & CXTranslationUnit_ForSerialization;
 
   // Configure the diagnostics.
@@ -3358,7 +3360,10 @@ clang_parseTranslationUnit_Impl(CXIndex CIdx, const char *source_filename,
     Args->push_back("-Xclang");
     Args->push_back("-detailed-preprocessing-record");
   }
-  
+
+  // Suppress any editor placeholder diagnostics.
+  Args->push_back("-fallow-editor-placeholders");
+
   unsigned NumErrors = Diags->getClient()->getNumErrors();
   std::unique_ptr<ASTUnit> ErrUnit;
   // Unless the user specified that they want the preamble on the first parse
@@ -3373,7 +3378,7 @@ clang_parseTranslationUnit_Impl(CXIndex CIdx, const char *source_filename,
       /*CaptureDiagnostics=*/true, *RemappedFiles.get(),
       /*RemappedFilesKeepOriginalName=*/true, PrecompilePreambleAfterNParses,
       TUKind, CacheCodeCompletionResults, IncludeBriefCommentsInCodeCompletion,
-      /*AllowPCHWithCompilerErrors=*/true, SkipFunctionBodies,
+      /*AllowPCHWithCompilerErrors=*/true, SkipFunctionBodies, SingleFileParse,
       /*UserFilesAreVolatile=*/true, ForSerialization,
       CXXIdx->getPCHContainerOperations()->getRawReader().getFormat(),
       &ErrUnit));
@@ -7414,6 +7419,26 @@ unsigned clang_Cursor_isVariadic(CXCursor C) {
   if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(D))
     return MD->isVariadic();
 
+  return 0;
+}
+
+unsigned clang_Cursor_isExternalSymbol(CXCursor C,
+                                     CXString *language, CXString *definedIn,
+                                     unsigned *isGenerated) {
+  if (!clang_isDeclaration(C.kind))
+    return 0;
+
+  const Decl *D = getCursorDecl(C);
+
+  if (auto *attr = D->getExternalSourceSymbolAttr()) {
+    if (language)
+      *language = cxstring::createDup(attr->getLanguage());
+    if (definedIn)
+      *definedIn = cxstring::createDup(attr->getDefinedIn());
+    if (isGenerated)
+      *isGenerated = attr->getGeneratedDeclaration();
+    return 1;
+  }
   return 0;
 }
 

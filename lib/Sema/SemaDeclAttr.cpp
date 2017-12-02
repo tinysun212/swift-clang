@@ -909,7 +909,7 @@ static bool checkFunctionConditionAttr(Sema &S, Decl *D,
     Msg = "<no message provided>";
 
   SmallVector<PartialDiagnosticAt, 8> Diags;
-  if (!Cond->isValueDependent() &&
+  if (isa<FunctionDecl>(D) && !Cond->isValueDependent() &&
       !Expr::isPotentialConstantExprUnevaluated(Cond, cast<FunctionDecl>(D),
                                                 Diags)) {
     S.Diag(Attr.getLoc(), diag::err_attr_cond_never_constant_expr)
@@ -997,10 +997,11 @@ static void handleDiagnoseIfAttr(Sema &S, Decl *D, const AttributeList &Attr) {
     return;
   }
 
-  auto *FD = cast<FunctionDecl>(D);
-  bool ArgDependent = ArgumentDependenceChecker(FD).referencesArgs(Cond);
+  bool ArgDependent = false;
+  if (const auto *FD = dyn_cast<FunctionDecl>(D))
+    ArgDependent = ArgumentDependenceChecker(FD).referencesArgs(Cond);
   D->addAttr(::new (S.Context) DiagnoseIfAttr(
-      Attr.getRange(), S.Context, Cond, Msg, DiagType, ArgDependent, FD,
+      Attr.getRange(), S.Context, Cond, Msg, DiagType, ArgDependent, cast<NamedDecl>(D),
       Attr.getAttributeSpellingListIndex()));
 }
 
@@ -2323,10 +2324,8 @@ static void handleAvailabilityAttr(Sema &S, Decl *D,
       << Platform->Ident;
 
   NamedDecl *ND = dyn_cast<NamedDecl>(D);
-  if (!ND) {
-    S.Diag(Attr.getLoc(), diag::warn_attribute_ignored) << Attr.getName();
+  if (!ND) // We warned about this already, so just return.
     return;
-  }
 
   AvailabilityChange Introduced = Attr.getAvailabilityIntroduced();
   AvailabilityChange Deprecated = Attr.getAvailabilityDeprecated();
@@ -2444,12 +2443,6 @@ static void handleExternalSourceSymbolAttr(Sema &S, Decl *D,
     return;
   assert(checkAttributeAtMostNumArgs(S, Attr, 3) &&
          "Invalid number of arguments in an external_source_symbol attribute");
-
-  if (!isa<NamedDecl>(D)) {
-    S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type)
-        << Attr.getName() << ExpectedNamedDecl;
-    return;
-  }
 
   StringRef Language;
   if (const auto *SE = dyn_cast_or_null<StringLiteral>(Attr.getArgAsExpr(0)))
@@ -6106,18 +6099,21 @@ static void handleOpenCLNoSVMAttr(Sema &S, Decl *D, const AttributeList &Attr) {
 static bool handleCommonAttributeFeatures(Sema &S, Scope *scope, Decl *D,
                                           const AttributeList &Attr) {
   // Several attributes carry different semantics than the parsing requires, so
-  // those are opted out of the common handling.
+  // those are opted out of the common argument checks.
   //
   // We also bail on unknown and ignored attributes because those are handled
   // as part of the target-specific handling logic.
-  if (Attr.hasCustomParsing() ||
-      Attr.getKind() == AttributeList::UnknownAttribute)
+  if (Attr.getKind() == AttributeList::UnknownAttribute)
     return false;
-
   // Check whether the attribute requires specific language extensions to be
   // enabled.
   if (!Attr.diagnoseLangOpts(S))
     return true;
+  // Check whether the attribute appertains to the given subject.
+  if (!Attr.diagnoseAppertainsTo(S, D))
+    return true;
+  if (Attr.hasCustomParsing())
+    return false;
 
   if (Attr.getMinArgs() == Attr.getMaxArgs()) {
     // If there are no optional arguments, then checking for the argument count
@@ -6133,10 +6129,6 @@ static bool handleCommonAttributeFeatures(Sema &S, Scope *scope, Decl *D,
              !checkAttributeAtMostNumArgs(S, Attr, Attr.getMaxArgs()))
       return true;
   }
-
-  // Check whether the attribute appertains to the given subject.
-  if (!Attr.diagnoseAppertainsTo(S, D))
-    return true;
 
   return false;
 }
@@ -7027,6 +7019,8 @@ void Sema::ProcessDeclAttributes(Scope *S, Decl *D, const Declarator &PD) {
 
   // Look for API notes that map to attributes.
   ProcessAPINotes(D);
+  // Apply additional attributes specified by '#pragma clang attribute'.
+  AddPragmaAttributes(S, D);
 }
 
 /// Is the given declaration allowed to use a forbidden type?
@@ -7195,6 +7189,7 @@ static void DoEmitAvailabilityWarning(Sema &S, AvailabilityResult K,
   // Diagnostics for deprecated or unavailable.
   unsigned diag, diag_message, diag_fwdclass_message;
   unsigned diag_available_here = diag::note_availability_specified_here;
+  SourceLocation NoteLocation = D->getLocation();
 
   // Matches 'diag::note_property_attribute' options.
   unsigned property_note_select;
@@ -7217,6 +7212,8 @@ static void DoEmitAvailabilityWarning(Sema &S, AvailabilityResult K,
     diag_fwdclass_message = diag::warn_deprecated_fwdclass_message;
     property_note_select = /* deprecated */ 0;
     available_here_select_kind = /* deprecated */ 2;
+    if (const auto *attr = D->getAttr<DeprecatedAttr>())
+      NoteLocation = attr->getLocation();
     break;
 
   case AR_Unavailable:
@@ -7335,7 +7332,7 @@ static void DoEmitAvailabilityWarning(Sema &S, AvailabilityResult K,
     }
   }
   else
-    S.Diag(D->getLocation(), diag_available_here)
+    S.Diag(NoteLocation, diag_available_here)
         << D << available_here_select_kind;
 
   if (K == AR_NotYetIntroduced)
@@ -7430,6 +7427,69 @@ void Sema::EmitAvailabilityWarning(AvailabilityResult AR,
 
 namespace {
 
+/// Returns true if the given statement can be a body-like child of \p Parent.
+bool isBodyLikeChildStmt(const Stmt *S, const Stmt *Parent) {
+  switch (Parent->getStmtClass()) {
+  case Stmt::IfStmtClass:
+    return cast<IfStmt>(Parent)->getThen() == S ||
+           cast<IfStmt>(Parent)->getElse() == S;
+  case Stmt::WhileStmtClass:
+    return cast<WhileStmt>(Parent)->getBody() == S;
+  case Stmt::DoStmtClass:
+    return cast<DoStmt>(Parent)->getBody() == S;
+  case Stmt::ForStmtClass:
+    return cast<ForStmt>(Parent)->getBody() == S;
+  case Stmt::CXXForRangeStmtClass:
+    return cast<CXXForRangeStmt>(Parent)->getBody() == S;
+  case Stmt::ObjCForCollectionStmtClass:
+    return cast<ObjCForCollectionStmt>(Parent)->getBody() == S;
+  case Stmt::CaseStmtClass:
+  case Stmt::DefaultStmtClass:
+    return cast<SwitchCase>(Parent)->getSubStmt() == S;
+  default:
+    return false;
+  }
+}
+
+class StmtUSEFinder : public RecursiveASTVisitor<StmtUSEFinder> {
+  const Stmt *Target;
+
+public:
+  bool VisitStmt(Stmt *S) { return S != Target; }
+
+  /// Returns true if the given statement is present in the given declaration.
+  static bool isContained(const Stmt *Target, const Decl *D) {
+    StmtUSEFinder Visitor;
+    Visitor.Target = Target;
+    return !Visitor.TraverseDecl(const_cast<Decl *>(D));
+  }
+};
+
+/// Traverses the AST and finds the last statement that used a given
+/// declaration.
+class LastDeclUSEFinder : public RecursiveASTVisitor<LastDeclUSEFinder> {
+  const Decl *D;
+
+public:
+  bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+    if (DRE->getDecl() == D)
+      return false;
+    return true;
+  }
+
+  static const Stmt *findLastStmtThatUsesDecl(const Decl *D,
+                                              const CompoundStmt *Scope) {
+    LastDeclUSEFinder Visitor;
+    Visitor.D = D;
+    for (auto I = Scope->body_rbegin(), E = Scope->body_rend(); I != E; ++I) {
+      const Stmt *S = *I;
+      if (!Visitor.TraverseStmt(const_cast<Stmt *>(S)))
+        return S;
+    }
+    return nullptr;
+  }
+};
+
 /// \brief This class implements -Wunguarded-availability.
 ///
 /// This is done with a traversal of the AST of a function that makes reference
@@ -7445,6 +7505,7 @@ class DiagnoseUnguardedAvailability
 
   /// Stack of potentially nested 'if (@available(...))'s.
   SmallVector<VersionTuple, 8> AvailabilityStack;
+  SmallVector<const Stmt *, 16> StmtStack;
 
   void DiagnoseDeclAvailability(NamedDecl *D, SourceRange Range);
 
@@ -7455,9 +7516,33 @@ public:
         SemaRef.Context.getTargetInfo().getPlatformMinVersion());
   }
 
+  bool TraverseDecl(Decl *D) {
+    // Avoid visiting nested functions to prevent duplicate warnings.
+    if (!D || isa<FunctionDecl>(D))
+      return true;
+    return Base::TraverseDecl(D);
+  }
+
+  bool TraverseStmt(Stmt *S) {
+    if (!S)
+      return true;
+    StmtStack.push_back(S);
+    bool Result = Base::TraverseStmt(S);
+    StmtStack.pop_back();
+    return Result;
+  }
+
   void IssueDiagnostics(Stmt *S) { TraverseStmt(S); }
 
   bool TraverseIfStmt(IfStmt *If);
+
+  bool TraverseLambdaExpr(LambdaExpr *E) { return true; }
+
+  bool VisitObjCPropertyRefExpr(ObjCPropertyRefExpr *PRE) {
+    if (PRE->isClassReceiver())
+      DiagnoseDeclAvailability(PRE->getClassReceiver(), PRE->getReceiverLocation());
+    return true;
+  }
 
   bool VisitObjCMessageExpr(ObjCMessageExpr *Msg) {
     if (ObjCMethodDecl *D = Msg->getMethodDecl())
@@ -7475,6 +7560,12 @@ public:
   bool VisitMemberExpr(MemberExpr *ME) {
     DiagnoseDeclAvailability(ME->getMemberDecl(),
                              SourceRange(ME->getLocStart(), ME->getLocEnd()));
+    return true;
+  }
+
+  bool VisitObjCAvailabilityCheckExpr(ObjCAvailabilityCheckExpr *E) {
+    SemaRef.Diag(E->getLocStart(), diag::warn_at_available_unchecked_use)
+        << (!SemaRef.getLangOpts().ObjC1);
     return true;
   }
 
@@ -7512,15 +7603,84 @@ void DiagnoseUnguardedAvailability::DiagnoseDeclAvailability(
     SemaRef.Diag(D->getLocation(), diag::note_availability_specified_here)
         << D << /* partial */ 3;
 
-    // FIXME: Replace this with a fixit diagnostic.
-    SemaRef.Diag(Range.getBegin(), diag::note_unguarded_available_silence)
-        << Range << D;
+    auto FixitDiag =
+        SemaRef.Diag(Range.getBegin(), diag::note_unguarded_available_silence)
+        << Range << D
+        << (SemaRef.getLangOpts().ObjC1 ? /*@available*/ 0
+                                        : /*__builtin_available*/ 1);
+
+    // Find the statement which should be enclosed in the if @available check.
+    if (StmtStack.empty())
+      return;
+    const Stmt *StmtOfUse = StmtStack.back();
+    const CompoundStmt *Scope = nullptr;
+    for (const Stmt *S : llvm::reverse(StmtStack)) {
+      if (const auto *CS = dyn_cast<CompoundStmt>(S)) {
+        Scope = CS;
+        break;
+      }
+      if (isBodyLikeChildStmt(StmtOfUse, S)) {
+        // The declaration won't be seen outside of the statement, so we don't
+        // have to wrap the uses of any declared variables in if (@available).
+        // Therefore we can avoid setting Scope here.
+        break;
+      }
+      StmtOfUse = S;
+    }
+    const Stmt *LastStmtOfUse = nullptr;
+    if (isa<DeclStmt>(StmtOfUse) && Scope) {
+      for (const Decl *D : cast<DeclStmt>(StmtOfUse)->decls()) {
+        if (StmtUSEFinder::isContained(StmtStack.back(), D)) {
+          LastStmtOfUse = LastDeclUSEFinder::findLastStmtThatUsesDecl(D, Scope);
+          break;
+        }
+      }
+    }
+
+    const SourceManager &SM = SemaRef.getSourceManager();
+    SourceLocation IfInsertionLoc =
+        SM.getExpansionLoc(StmtOfUse->getLocStart());
+    SourceLocation StmtEndLoc =
+        SM.getExpansionRange(
+              (LastStmtOfUse ? LastStmtOfUse : StmtOfUse)->getLocEnd())
+            .second;
+    if (SM.getFileID(IfInsertionLoc) != SM.getFileID(StmtEndLoc))
+      return;
+
+    StringRef Indentation = Lexer::getIndentationForLine(IfInsertionLoc, SM);
+    const char *ExtraIndentation = "    ";
+    std::string FixItString;
+    llvm::raw_string_ostream FixItOS(FixItString);
+    FixItOS << "if (" << (SemaRef.getLangOpts().ObjC1 ? "@available"
+                                                      : "__builtin_available")
+            << "("
+            << AvailabilityAttr::getPlatformNameSourceSpelling(
+                   SemaRef.getASTContext().getTargetInfo().getPlatformName())
+            << " " << Introduced.getAsString() << ", *)) {\n"
+            << Indentation << ExtraIndentation;
+    FixitDiag << FixItHint::CreateInsertion(IfInsertionLoc, FixItOS.str());
+    SourceLocation ElseInsertionLoc = Lexer::findLocationAfterToken(
+        StmtEndLoc, tok::semi, SM, SemaRef.getLangOpts(),
+        /*SkipTrailingWhitespaceAndNewLine=*/false);
+    if (ElseInsertionLoc.isInvalid())
+      ElseInsertionLoc =
+          Lexer::getLocForEndOfToken(StmtEndLoc, 0, SM, SemaRef.getLangOpts());
+    FixItOS.str().clear();
+    FixItOS << "\n"
+            << Indentation << "} else {\n"
+            << Indentation << ExtraIndentation
+            << "// Fallback on earlier versions\n"
+            << Indentation << "}";
+    FixitDiag << FixItHint::CreateInsertion(ElseInsertionLoc, FixItOS.str());
   }
 }
 
 bool DiagnoseUnguardedAvailability::VisitTypeLoc(TypeLoc Ty) {
   const Type *TyPtr = Ty.getTypePtr();
   SourceRange Range{Ty.getBeginLoc(), Ty.getEndLoc()};
+
+  if (Range.isInvalid())
+    return true;
 
   if (const TagType *TT = dyn_cast<TagType>(TyPtr)) {
     TagDecl *TD = TT->getDecl();
@@ -7574,6 +7734,8 @@ void Sema::DiagnoseUnguardedAvailabilityViolations(Decl *D) {
     Body = FD->getBody();
   } else if (auto *MD = dyn_cast<ObjCMethodDecl>(D))
     Body = MD->getBody();
+  else if (auto *BD = dyn_cast<BlockDecl>(D))
+    Body = BD->getBody();
 
   assert(Body && "Need a body here!");
 

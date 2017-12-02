@@ -19,6 +19,7 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/CommonBugCategories.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
@@ -174,7 +175,10 @@ public:
         II_valloc(nullptr), II_reallocf(nullptr), II_strndup(nullptr),
         II_strdup(nullptr), II_win_strdup(nullptr), II_kmalloc(nullptr),
         II_if_nameindex(nullptr), II_if_freenameindex(nullptr),
-        II_wcsdup(nullptr), II_win_wcsdup(nullptr) {}
+        II_wcsdup(nullptr), II_win_wcsdup(nullptr), II_g_malloc(nullptr),
+        II_g_malloc0(nullptr), II_g_realloc(nullptr), II_g_try_malloc(nullptr), 
+        II_g_try_malloc0(nullptr), II_g_try_realloc(nullptr), 
+        II_g_free(nullptr), II_g_memdup(nullptr) {}
 
   /// In pessimistic mode, the checker assumes that it does not know which
   /// functions might free the memory.
@@ -236,7 +240,9 @@ private:
                          *II_realloc, *II_calloc, *II_valloc, *II_reallocf,
                          *II_strndup, *II_strdup, *II_win_strdup, *II_kmalloc,
                          *II_if_nameindex, *II_if_freenameindex, *II_wcsdup,
-                         *II_win_wcsdup;
+                         *II_win_wcsdup, *II_g_malloc, *II_g_malloc0, 
+                         *II_g_realloc, *II_g_try_malloc, *II_g_try_malloc0, 
+                         *II_g_try_realloc, *II_g_free, *II_g_memdup;
   mutable Optional<uint64_t> KernelZeroFlagVal;
 
   void initIdentifierInfo(ASTContext &C) const;
@@ -554,6 +560,16 @@ void MallocChecker::initIdentifierInfo(ASTContext &Ctx) const {
   II_win_strdup = &Ctx.Idents.get("_strdup");
   II_win_wcsdup = &Ctx.Idents.get("_wcsdup");
   II_win_alloca = &Ctx.Idents.get("_alloca");
+
+  // Glib
+  II_g_malloc = &Ctx.Idents.get("g_malloc");
+  II_g_malloc0 = &Ctx.Idents.get("g_malloc0");
+  II_g_realloc = &Ctx.Idents.get("g_realloc");
+  II_g_try_malloc = &Ctx.Idents.get("g_try_malloc");
+  II_g_try_malloc0 = &Ctx.Idents.get("g_try_malloc0");
+  II_g_try_realloc = &Ctx.Idents.get("g_try_realloc");
+  II_g_free = &Ctx.Idents.get("g_free");
+  II_g_memdup = &Ctx.Idents.get("g_memdup");
 }
 
 bool MallocChecker::isMemFunction(const FunctionDecl *FD, ASTContext &C) const {
@@ -589,7 +605,8 @@ bool MallocChecker::isCMemFunction(const FunctionDecl *FD,
     initIdentifierInfo(C);
 
     if (Family == AF_Malloc && CheckFree) {
-      if (FunI == II_free || FunI == II_realloc || FunI == II_reallocf)
+      if (FunI == II_free || FunI == II_realloc || FunI == II_reallocf || 
+          FunI == II_g_free)
         return true;
     }
 
@@ -597,7 +614,11 @@ bool MallocChecker::isCMemFunction(const FunctionDecl *FD,
       if (FunI == II_malloc || FunI == II_realloc || FunI == II_reallocf ||
           FunI == II_calloc || FunI == II_valloc || FunI == II_strdup ||
           FunI == II_win_strdup || FunI == II_strndup || FunI == II_wcsdup ||
-          FunI == II_win_wcsdup || FunI == II_kmalloc)
+          FunI == II_win_wcsdup || FunI == II_kmalloc ||
+          FunI == II_g_malloc || FunI == II_g_malloc0 || 
+          FunI == II_g_realloc || FunI == II_g_try_malloc || 
+          FunI == II_g_try_malloc0 || FunI == II_g_try_realloc ||
+          FunI == II_g_memdup)
         return true;
     }
 
@@ -762,7 +783,7 @@ void MallocChecker::checkPostStmt(const CallExpr *CE, CheckerContext &C) const {
     initIdentifierInfo(C.getASTContext());
     IdentifierInfo *FunI = FD->getIdentifier();
 
-    if (FunI == II_malloc) {
+    if (FunI == II_malloc || FunI == II_g_malloc || FunI == II_g_try_malloc) {
       if (CE->getNumArgs() < 1)
         return;
       if (CE->getNumArgs() < 3) {
@@ -791,7 +812,8 @@ void MallocChecker::checkPostStmt(const CallExpr *CE, CheckerContext &C) const {
         return;
       State = MallocMemAux(C, CE, CE->getArg(0), UndefinedVal(), State);
       State = ProcessZeroAllocation(C, CE, 0, State);
-    } else if (FunI == II_realloc) {
+    } else if (FunI == II_realloc || FunI == II_g_realloc || 
+               FunI == II_g_try_realloc) {
       State = ReallocMem(C, CE, false, State);
       State = ProcessZeroAllocation(C, CE, 1, State);
     } else if (FunI == II_reallocf) {
@@ -801,7 +823,7 @@ void MallocChecker::checkPostStmt(const CallExpr *CE, CheckerContext &C) const {
       State = CallocMem(C, CE, State);
       State = ProcessZeroAllocation(C, CE, 0, State);
       State = ProcessZeroAllocation(C, CE, 1, State);
-    } else if (FunI == II_free) {
+    } else if (FunI == II_free || FunI == II_g_free) {
       State = FreeMemAux(C, CE, State, 0, false, ReleasedAllocatedMemory);
     } else if (FunI == II_strdup || FunI == II_win_strdup ||
                FunI == II_wcsdup || FunI == II_win_wcsdup) {
@@ -841,6 +863,18 @@ void MallocChecker::checkPostStmt(const CallExpr *CE, CheckerContext &C) const {
                            AF_IfNameIndex);
     } else if (FunI == II_if_freenameindex) {
       State = FreeMemAux(C, CE, State, 0, false, ReleasedAllocatedMemory);
+    } else if (FunI == II_g_malloc0 || FunI == II_g_try_malloc0) {
+      if (CE->getNumArgs() < 1)
+        return;
+      SValBuilder &svalBuilder = C.getSValBuilder();
+      SVal zeroVal = svalBuilder.makeZeroVal(svalBuilder.getContext().CharTy);
+      State = MallocMemAux(C, CE, CE->getArg(0), zeroVal, State);
+      State = ProcessZeroAllocation(C, CE, 0, State);
+    } else if (FunI == II_g_memdup) {
+      if (CE->getNumArgs() < 2)
+        return;
+      State = MallocMemAux(C, CE, CE->getArg(1), UndefinedVal(), State);
+      State = ProcessZeroAllocation(C, CE, 1, State);
     }
   }
 
@@ -1664,8 +1698,8 @@ void MallocChecker::ReportBadFree(CheckerContext &C, SVal ArgVal,
 
   if (ExplodedNode *N = C.generateErrorNode()) {
     if (!BT_BadFree[*CheckKind])
-      BT_BadFree[*CheckKind].reset(
-          new BugType(CheckNames[*CheckKind], "Bad free", "Memory Error"));
+      BT_BadFree[*CheckKind].reset(new BugType(
+          CheckNames[*CheckKind], "Bad free", categories::MemoryError));
 
     SmallString<100> buf;
     llvm::raw_svector_ostream os(buf);
@@ -1709,8 +1743,8 @@ void MallocChecker::ReportFreeAlloca(CheckerContext &C, SVal ArgVal,
 
   if (ExplodedNode *N = C.generateErrorNode()) {
     if (!BT_FreeAlloca[*CheckKind])
-      BT_FreeAlloca[*CheckKind].reset(
-          new BugType(CheckNames[*CheckKind], "Free alloca()", "Memory Error"));
+      BT_FreeAlloca[*CheckKind].reset(new BugType(
+          CheckNames[*CheckKind], "Free alloca()", categories::MemoryError));
 
     auto R = llvm::make_unique<BugReport>(
         *BT_FreeAlloca[*CheckKind],
@@ -1735,7 +1769,7 @@ void MallocChecker::ReportMismatchedDealloc(CheckerContext &C,
     if (!BT_MismatchedDealloc)
       BT_MismatchedDealloc.reset(
           new BugType(CheckNames[CK_MismatchedDeallocatorChecker],
-                      "Bad deallocator", "Memory Error"));
+                      "Bad deallocator", categories::MemoryError));
 
     SmallString<100> buf;
     llvm::raw_svector_ostream os(buf);
@@ -1795,8 +1829,8 @@ void MallocChecker::ReportOffsetFree(CheckerContext &C, SVal ArgVal,
     return;
 
   if (!BT_OffsetFree[*CheckKind])
-    BT_OffsetFree[*CheckKind].reset(
-        new BugType(CheckNames[*CheckKind], "Offset free", "Memory Error"));
+    BT_OffsetFree[*CheckKind].reset(new BugType(
+        CheckNames[*CheckKind], "Offset free", categories::MemoryError));
 
   SmallString<100> buf;
   llvm::raw_svector_ostream os(buf);
@@ -1847,7 +1881,7 @@ void MallocChecker::ReportUseAfterFree(CheckerContext &C, SourceRange Range,
   if (ExplodedNode *N = C.generateErrorNode()) {
     if (!BT_UseFree[*CheckKind])
       BT_UseFree[*CheckKind].reset(new BugType(
-          CheckNames[*CheckKind], "Use-after-free", "Memory Error"));
+          CheckNames[*CheckKind], "Use-after-free", categories::MemoryError));
 
     auto R = llvm::make_unique<BugReport>(*BT_UseFree[*CheckKind],
                                          "Use of memory after it is freed", N);
@@ -1873,8 +1907,8 @@ void MallocChecker::ReportDoubleFree(CheckerContext &C, SourceRange Range,
 
   if (ExplodedNode *N = C.generateErrorNode()) {
     if (!BT_DoubleFree[*CheckKind])
-      BT_DoubleFree[*CheckKind].reset(
-          new BugType(CheckNames[*CheckKind], "Double free", "Memory Error"));
+      BT_DoubleFree[*CheckKind].reset(new BugType(
+          CheckNames[*CheckKind], "Double free", categories::MemoryError));
 
     auto R = llvm::make_unique<BugReport>(
         *BT_DoubleFree[*CheckKind],
@@ -1902,7 +1936,8 @@ void MallocChecker::ReportDoubleDelete(CheckerContext &C, SymbolRef Sym) const {
   if (ExplodedNode *N = C.generateErrorNode()) {
     if (!BT_DoubleDelete)
       BT_DoubleDelete.reset(new BugType(CheckNames[CK_NewDeleteChecker],
-                                        "Double delete", "Memory Error"));
+                                        "Double delete",
+                                        categories::MemoryError));
 
     auto R = llvm::make_unique<BugReport>(
         *BT_DoubleDelete, "Attempt to delete released memory", N);
@@ -1928,8 +1963,9 @@ void MallocChecker::ReportUseZeroAllocated(CheckerContext &C,
 
   if (ExplodedNode *N = C.generateErrorNode()) {
     if (!BT_UseZerroAllocated[*CheckKind])
-      BT_UseZerroAllocated[*CheckKind].reset(new BugType(
-          CheckNames[*CheckKind], "Use of zero allocated", "Memory Error"));
+      BT_UseZerroAllocated[*CheckKind].reset(
+          new BugType(CheckNames[*CheckKind], "Use of zero allocated",
+                      categories::MemoryError));
 
     auto R = llvm::make_unique<BugReport>(*BT_UseZerroAllocated[*CheckKind],
                                          "Use of zero-allocated memory", N);
@@ -2131,8 +2167,8 @@ void MallocChecker::reportLeak(SymbolRef Sym, ExplodedNode *N,
 
   assert(N);
   if (!BT_Leak[*CheckKind]) {
-    BT_Leak[*CheckKind].reset(
-        new BugType(CheckNames[*CheckKind], "Memory leak", "Memory Error"));
+    BT_Leak[*CheckKind].reset(new BugType(CheckNames[*CheckKind], "Memory leak",
+                                          categories::MemoryError));
     // Leaks should not be reported if they are post-dominated by a sink:
     // (1) Sinks are higher importance bugs.
     // (2) NoReturnFunctionChecker uses sink nodes to represent paths ending

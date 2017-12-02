@@ -847,6 +847,13 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
 
   Builder.SetInsertPoint(EntryBB);
 
+  // If we're checking the return value, allocate space for a pointer to a
+  // precise source location of the checked return statement.
+  if (requiresReturnValueCheck()) {
+    ReturnLocation = CreateDefaultAlignTempAlloca(Int8PtrTy, "return.sloc.ptr");
+    InitTempAlloca(ReturnLocation, llvm::ConstantPointerNull::get(Int8PtrTy));
+  }
+
   // Emit subprogram debug descriptor.
   if (CGDebugInfo *DI = getDebugInfo()) {
     // Reconstruct the type from the argument list so that implicit parameters,
@@ -956,13 +963,14 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
       CXXThisValue = CXXABIThisValue;
     }
 
-    // Null-check the 'this' pointer once per function, if it's available.
+    // Check the 'this' pointer once per function, if it's available.
     if (CXXThisValue) {
       SanitizerSet SkippedChecks;
-      SkippedChecks.set(SanitizerKind::Alignment, true);
       SkippedChecks.set(SanitizerKind::ObjectSize, true);
-      EmitTypeCheck(TCK_Load, Loc, CXXThisValue, MD->getThisType(getContext()),
-                    /*Alignment=*/CharUnits::Zero(), SkippedChecks);
+      QualType ThisTy = MD->getThisType(getContext());
+      EmitTypeCheck(TCK_Load, Loc, CXXThisValue, ThisTy,
+                    getContext().getTypeAlignInChars(ThisTy->getPointeeType()),
+                    SkippedChecks);
     }
   }
 

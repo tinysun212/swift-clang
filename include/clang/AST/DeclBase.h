@@ -34,6 +34,7 @@ class DeclarationName;
 class DependentDiagnostic;
 class EnumDecl;
 class ExportDecl;
+class ExternalSourceSymbolAttr;
 class FunctionDecl;
 class FunctionType;
 enum Linkage : unsigned char;
@@ -562,6 +563,10 @@ public:
     NextInContextAndBits.setInt(Bits);
   }
 
+  /// \brief Looks on this and related declarations for an applicable
+  /// external source symbol attribute.
+  ExternalSourceSymbolAttr *getExternalSourceSymbolAttr() const;
+
   /// \brief Whether this declaration was marked as being private to the
   /// module in which it was defined.
   bool isModulePrivate() const {
@@ -615,6 +620,14 @@ public:
   AvailabilityResult
   getAvailability(std::string *Message = nullptr,
                   VersionTuple EnclosingVersion = VersionTuple()) const;
+
+  /// \brief Retrieve the version of the target platform in which this
+  /// declaration was introduced.
+  ///
+  /// \returns An empty version tuple if this declaration has no 'introduced'
+  /// availability attributes, or the version tuple that's specified in the
+  /// attribute otherwise.
+  VersionTuple getVersionIntroduced() const;
 
   /// \brief Determine whether this declaration is marked 'deprecated'.
   ///
