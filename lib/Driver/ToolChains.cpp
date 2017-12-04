@@ -37,7 +37,11 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib> // ::getenv
 #include <system_error>
+#if defined(__MINGW32__)
+// MinGW doesn't have the 'utsname.h' and the function uname().
+#else
 #include <sys/utsname.h>
+#endif
 
 using namespace clang::driver;
 using namespace clang::driver::toolchains;
@@ -513,12 +517,16 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
 
 // Clang-900 specific change that's cherry-picked from the LLVM change r307372:
 static std::string getOSVersion() {
+#if defined(__MINGW32__)
+  return "";
+#else
   struct utsname info;
 
   if (uname(&info))
     return "";
 
   return info.release;
+#endif
 }
 
 static std::string updateTripleOSVersion(std::string TargetTripleString) {

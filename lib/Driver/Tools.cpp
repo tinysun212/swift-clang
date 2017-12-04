@@ -5388,7 +5388,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_fno_operator_names);
   // Emulated TLS is enabled by default on Android, and can be enabled manually
   // with -femulated-tls.
-  bool EmulatedTLSDefault = Triple.isAndroid() || Triple.isWindowsCygwinEnvironment();
+  bool EmulatedTLSDefault = Triple.isAndroid() || Triple.isWindowsCygwinEnvironment() ||
+      Triple.isWindowsGNUEnvironment();
   if (Args.hasFlag(options::OPT_femulated_tls, options::OPT_fno_emulated_tls,
                    EmulatedTLSDefault))
     CmdArgs.push_back("-femulated-tls");
@@ -11401,7 +11402,7 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       if (Args.hasArg(options::OPT_pg))
         CmdArgs.push_back("-lgmon");
 
-      if (Args.hasArg(options::OPT_pthread))
+      if (!Args.hasArg(options::OPT_no_pthread))
         CmdArgs.push_back("-lpthread");
 
       // add system libraries
