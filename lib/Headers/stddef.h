@@ -125,7 +125,7 @@ using ::std::nullptr_t;
 __WINT_TYPE__ directly; accommodate both by requiring __need_wint_t */
 #if defined(__need_wint_t)
 /* Always define wint_t when modules are available. */
-#if !defined(_WINT_T) || __has_feature(modules)
+#if !defined(_WINT_T)  // || __has_feature(modules)
 #if !__has_feature(modules)
 #define _WINT_T
 #endif

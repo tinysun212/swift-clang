@@ -5061,7 +5061,7 @@ class CygwinX86_64TargetInfo : public X86_64TargetInfo {
 public:
   CygwinX86_64TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : X86_64TargetInfo(Triple, Opts) {
-    TLSSupported = false;
+    HasFloat128 = true;
     WCharType = UnsignedShort;
   }
   void getTargetDefines(const LangOptions &Opts,
