@@ -29,7 +29,7 @@ extern int indextest_core_main(int argc, const char **argv);
 /* Utility functions.                                                         */
 /******************************************************************************/
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__CYGWIN__)
 char *basename(const char* path)
 {
     char* base1 = (char*)strrchr(path, '/');

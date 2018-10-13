@@ -3900,7 +3900,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // Emulated TLS is enabled by default on Android and OpenBSD, and can be enabled
   // manually with -femulated-tls.
   bool EmulatedTLSDefault = Triple.isAndroid() || Triple.isOSOpenBSD() ||
-                            Triple.isWindowsCygwinEnvironment();
+                            Triple.isWindowsCygwinEnvironment() ||
+                            Triple.isWindowsGNUEnvironment();Triple.isWindowsGNUEnvironment();
   if (Args.hasFlag(options::OPT_femulated_tls, options::OPT_fno_emulated_tls,
                    EmulatedTLSDefault))
     CmdArgs.push_back("-femulated-tls");

@@ -220,7 +220,7 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       if (Args.hasArg(options::OPT_pg))
         CmdArgs.push_back("-lgmon");
 
-      if (Args.hasArg(options::OPT_pthread))
+      if (!Args.hasArg(options::OPT_no_pthread))
         CmdArgs.push_back("-lpthread");
 
       // add system libraries

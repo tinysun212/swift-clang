@@ -22,6 +22,12 @@
 #include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
 
+#if defined(_MSC_VER)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
 using namespace clang;
 using namespace clang::index;
 using namespace clang::index::store;
@@ -399,7 +405,11 @@ IndexUnitReader::createWithFilePath(StringRef FilePath, std::string &Error) {
     int FD;
     AutoFDClose(int FD) : FD(FD) {}
     ~AutoFDClose() {
-        llvm::sys::Process::SafelyCloseFileDescriptor(FD);
+#if defined(_MSC_VER)
+      ::_close(FD);
+#else
+      ::close(FD);
+#endif
     }
   } AutoFDClose(FD);
 
